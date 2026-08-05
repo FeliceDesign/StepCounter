@@ -68,6 +68,62 @@ void main() {
     });
   });
 
+  group('live updates', () {
+    // Regression: addSteps writes through customStatement, and drift cannot
+    // infer which tables a raw statement touched. Without an explicit
+    // notification the watch stream never re-emits, so the on-screen count only
+    // refreshed when the app restarted and re-ran the initial query.
+    test('the watch stream emits again after a write', () async {
+      final start = DayMath.dayStart(DateTime.now());
+      final stream = db.watchStepsBetween(start, DayMath.nextDay(start));
+
+      final seen = <int>[];
+      final sub = stream.listen(seen.add);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      await db.addSteps(minuteOf(DateTime.now()), Activity.walking, 12);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      await sub.cancel();
+      expect(seen.first, 0);
+      expect(seen.last, 12, reason: 'the stream must observe the new steps');
+    });
+
+    test('a batched drain also wakes the stream', () async {
+      final start = DayMath.dayStart(DateTime.now());
+      final base = minuteOf(DateTime.now());
+      final seen = <int>[];
+      final sub =
+          db.watchStepsBetween(start, DayMath.nextDay(start)).listen(seen.add);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      await db.addStepBatch([
+        StepBucket(minuteEpoch: base, activity: Activity.walking, steps: 7),
+        StepBucket(minuteEpoch: base, activity: Activity.running, steps: 3),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      await sub.cancel();
+      expect(seen.last, 10);
+    });
+
+    test('clearing history wakes the stream too', () async {
+      final start = DayMath.dayStart(DateTime.now());
+      await db.addSteps(minuteOf(DateTime.now()), Activity.walking, 50);
+
+      final seen = <int>[];
+      final sub =
+          db.watchStepsBetween(start, DayMath.nextDay(start)).listen(seen.add);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      await db.clearStepHistory();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      await sub.cancel();
+      expect(seen.last, 0);
+    });
+  });
+
   group('daily totals', () {
     test('returns one entry per day including empty ones', () async {
       final today = DayMath.dayStart(DateTime.now());

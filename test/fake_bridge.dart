@@ -36,6 +36,9 @@ class FakeNativeBridge extends NativeBridge {
   ActivityParams? lastActivityParamsPushed;
   Map<String, dynamic> diagnosticsPayload = const {};
 
+  /// Set to have diagnostics report an Android count for today.
+  int? hardwareToday;
+
   int drainCallCount = 0;
   int? todayTotalPushed;
 
@@ -111,7 +114,10 @@ class FakeNativeBridge extends NativeBridge {
   Future<void> clearAutoWindows() async => autoWindowsCleared = true;
 
   @override
-  Future<Diagnostics> diagnostics() async => Diagnostics(diagnosticsPayload);
+  Future<Diagnostics> diagnostics() async => Diagnostics({
+        ...diagnosticsPayload,
+        if (hardwareToday != null) 'hardwareToday': hardwareToday,
+      });
 
   @override
   Future<bool> isIgnoringBatteryOptimizations() async => true;

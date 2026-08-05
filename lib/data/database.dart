@@ -130,6 +130,17 @@ class AppDatabase extends _$AppDatabase {
       'ON CONFLICT(minute_epoch, activity) DO UPDATE SET steps = steps + excluded.steps',
       [minuteEpoch, activity.id, steps],
     );
+
+    // Required, not optional. Drift cannot see inside a raw statement, so it
+    // has no idea step_minutes changed and will not wake anything watching it.
+    // Without this the live count only refreshes when a new subscription runs
+    // its initial query — i.e. when the app restarts.
+    //
+    // Inside a transaction drift defers these until commit, so the batched
+    // drain still produces a single wake-up rather than one per bucket.
+    notifyUpdates({
+      TableUpdate.onTable(stepMinutes, kind: UpdateKind.insert),
+    });
   }
 
   /// Commits a drained batch from the foreground service in one transaction, so

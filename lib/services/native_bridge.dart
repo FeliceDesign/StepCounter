@@ -56,6 +56,13 @@ class Diagnostics {
   int get pendingSteps => (raw['pendingSteps'] as num?)?.toInt() ?? 0;
   int get todaySteps => (raw['todaySteps'] as num?)?.toInt() ?? 0;
 
+  /// Android's own count for today, or null when the device has no hardware
+  /// pedometer, permission was refused, or it has not reported yet.
+  int? get hardwareToday {
+    final v = (raw['hardwareToday'] as num?)?.toInt();
+    return (v == null || v < 0) ? null : v;
+  }
+
   double? get cadenceMs => (raw['cadenceMs'] as num?)?.toDouble();
   double get gyroLevel => (raw['gyroLevel'] as num?)?.toDouble() ?? 0;
   double get threshold => (raw['threshold'] as num?)?.toDouble() ?? 0;

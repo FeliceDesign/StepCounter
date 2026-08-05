@@ -112,6 +112,127 @@ void main() {
     });
   });
 
+  group('live updates', () {
+    // The reported bug: the main screen number only changed on app restart.
+    // addSteps writes through a raw statement, which drift cannot associate
+    // with a table, so nothing watching step_minutes was ever woken.
+    testWidgets('the count updates without rebuilding the screen',
+        (tester) async {
+      await repo.initialise();
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+      expect(find.text('0'), findsOneWidget);
+
+      // Exactly what a step event from the service triggers.
+      bridge.queueSteps(minuteOf(DateTime.now()), 27);
+      await repo.drainFromService();
+      await tester.pumpAndSettle();
+
+      expect(find.text('27'), findsOneWidget);
+
+      bridge.queueSteps(minuteOf(DateTime.now()), 13);
+      await repo.drainFromService();
+      await tester.pumpAndSettle();
+
+      expect(find.text('40'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('a step event from the service refreshes the display',
+        (tester) async {
+      await repo.initialise();
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      bridge.queueSteps(minuteOf(DateTime.now()), 55);
+      bridge.emit({'type': 'steps', 'count': 55});
+      await tester.pumpAndSettle();
+
+      expect(find.text('55'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
+  group('Android comparison', () {
+    testWidgets('shows both counts and the difference', (tester) async {
+      bridge.hardwareToday = 4180;
+      bridge.queueSteps(minuteOf(DateTime.now()), 4321);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('This app'), findsOneWidget);
+      expect(find.text('Android'), findsOneWidget);
+      expect(find.text('4,180'), findsOneWidget);
+      // 141 more than Android, which is +3.4%.
+      expect(find.textContaining('+141'), findsOneWidget);
+      expect(find.textContaining('3.4%'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('says so when the Android sensor is unavailable',
+        (tester) async {
+      bridge.hardwareToday = null;
+      bridge.queueSteps(minuteOf(DateTime.now()), 500);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Android step sensor unavailable'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('reports an exact match rather than a zero difference',
+        (tester) async {
+      bridge.hardwareToday = 1000;
+      bridge.queueSteps(minuteOf(DateTime.now()), 1000);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Exact match'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('suppresses a percentage when the sample is tiny',
+        (tester) async {
+      // 3 out of 12 is 25%, which reads as alarming and means nothing.
+      bridge.hardwareToday = 12;
+      bridge.queueSteps(minuteOf(DateTime.now()), 15);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('+3'), findsOneWidget);
+      expect(find.textContaining('%'), findsNothing);
+
+      await unmount(tester);
+    });
+
+    testWidgets('a negative difference is shown without a plus sign',
+        (tester) async {
+      bridge.hardwareToday = 2000;
+      bridge.queueSteps(minuteOf(DateTime.now()), 1800);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('-200'), findsOneWidget);
+
+      await unmount(tester);
+    });
+  });
+
   group('activity colouring', () {
     testWidgets('the legend appears once there is more than one activity',
         (tester) async {

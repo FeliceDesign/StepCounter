@@ -185,6 +185,21 @@ class StepStore(context: Context) {
         get() = prefs.getLong(KEY_HW_BASELINE, -1L)
         set(v) = prefs.edit().putLong(KEY_HW_BASELINE, v).apply()
 
+    /**
+     * Hardware counter reading at the start of today, so the app can show
+     * Android's own count for the day beside its own.
+     *
+     * Persisted because the service is routinely restarted mid-day and would
+     * otherwise have no idea where the day began.
+     */
+    var hardwareDayStart: Long
+        get() = prefs.getLong(KEY_HW_DAY_START, -1L)
+        set(v) = prefs.edit().putLong(KEY_HW_DAY_START, v).apply()
+
+    var hardwareDayIndex: Int
+        get() = prefs.getInt(KEY_HW_DAY_INDEX, -1)
+        set(v) = prefs.edit().putInt(KEY_HW_DAY_INDEX, v).apply()
+
     companion object {
         private const val KEY_PENDING = "pending_buckets"
         private const val KEY_PARAMS = "params_json"
@@ -192,6 +207,8 @@ class StepStore(context: Context) {
         private const val KEY_AUTO_CALIB = "auto_calibration"
         private const val KEY_SERVICE_ENABLED = "service_enabled"
         private const val KEY_HW_BASELINE = "hw_baseline"
+        private const val KEY_HW_DAY_START = "hw_day_start"
+        private const val KEY_HW_DAY_INDEX = "hw_day_index"
 
         const val MAX_AUTO_WINDOWS = 20
     }

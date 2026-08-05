@@ -239,6 +239,7 @@ class StepSensorService : Service(), SensorEventListener {
                 "type" to "steps",
                 "count" to stepTimestampsNs.size,
                 "activity" to activity,
+                "hardwareToday" to hardwareTodaySteps(),
                 "pendingTotal" to store.pendingTotal(),
             )
         )
@@ -251,8 +252,32 @@ class StepSensorService : Service(), SensorEventListener {
         // user un-walked.
         if (baseline < 0 || total < baseline) {
             store.hardwareBaseline = total
+            // The day's starting point referred to the pre-reboot counter, so
+            // it is meaningless now. Android's own count loses these steps too.
+            store.hardwareDayStart = total
+            store.hardwareDayIndex = localDayIndex()
         }
         latestHardwareTotal = total
+
+        val day = localDayIndex()
+        if (store.hardwareDayIndex != day || store.hardwareDayStart < 0) {
+            store.hardwareDayIndex = day
+            store.hardwareDayStart = total
+        }
+    }
+
+    /**
+     * Android's own count for today, or -1 when there is no hardware pedometer
+     * or it has not reported yet.
+     *
+     * Shown beside our count so the two can be compared directly. It is never
+     * used as the displayed total.
+     */
+    fun hardwareTodaySteps(): Int {
+        if (latestHardwareTotal < 0) return -1
+        val start = store.hardwareDayStart
+        if (start < 0) return -1
+        return (latestHardwareTotal - start).coerceAtLeast(0L).toInt()
     }
 
     /**
@@ -462,6 +487,7 @@ class StepSensorService : Service(), SensorEventListener {
         "hasGyro" to (gyroSensor != null),
         "hasHardwareCounter" to (hardwareCounter != null),
         "hasBarometer" to (barometer != null),
+        "hardwareToday" to hardwareTodaySteps(),
         "recording" to recording,
         "autoWindows" to store.autoWindowCount(),
     )

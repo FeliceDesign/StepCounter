@@ -42,6 +42,12 @@ class StepRepository extends ChangeNotifier {
   ActivityParams _activityParams = ActivityParams.factory;
   ActivityParams get activityParams => _activityParams;
 
+  int? _hardwareToday;
+
+  /// Android's own step count for today, for the side-by-side comparison.
+  /// Null when the device has no pedometer or has not reported yet.
+  int? get hardwareToday => _hardwareToday;
+
   bool _initialised = false;
   bool get initialised => _initialised;
 
@@ -52,6 +58,7 @@ class StepRepository extends ChangeNotifier {
     await drainFromService();
 
     _eventSub = bridge.events.listen(_onNativeEvent);
+    await refreshHardwareCount();
 
     // A periodic drain keeps the on-screen number honest even if an event is
     // dropped, and bounds how much sits in service storage at any moment.
@@ -72,6 +79,12 @@ class StepRepository extends ChangeNotifier {
   }
 
   Future<void> _onNativeEvent(Map<String, dynamic> event) async {
+    final hw = (event['hardwareToday'] as num?)?.toInt();
+    if (hw != null && hw >= 0 && hw != _hardwareToday) {
+      _hardwareToday = hw;
+      notifyListeners();
+    }
+
     switch (event['type']) {
       case 'steps':
         // The service already persisted these; pulling them across keeps the
@@ -99,6 +112,16 @@ class StepRepository extends ChangeNotifier {
     // real total, so we hand it back.
     await bridge.setTodayTotal(await stepsToday());
     notifyListeners();
+  }
+
+  /// Refreshes Android's own count. Cheap, and only ever called while the UI
+  /// is on screen.
+  Future<void> refreshHardwareCount() async {
+    final d = await bridge.diagnostics();
+    if (d.hardwareToday != _hardwareToday) {
+      _hardwareToday = d.hardwareToday;
+      notifyListeners();
+    }
   }
 
   Stream<int> watchToday() {
