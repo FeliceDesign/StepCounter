@@ -1,0 +1,41 @@
+name: stepcounter
+description: "Accelerometer-based step counter with self-calibrating detection."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Storage
+  drift: ^2.28.2
+  drift_flutter: ^0.2.7
+  path_provider: ^2.1.5
+
+  # Charts for the 7-day view and full history
+  fl_chart: ^1.1.1
+
+  # ACTIVITY_RECOGNITION / POST_NOTIFICATIONS runtime requests
+  permission_handler: ^12.0.1
+
+  # Settings + active calibration parameter vector
+  shared_preferences: ^2.5.3
+
+  intl: ^0.20.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.15
+  drift_dev: ^2.28.2
+
+flutter:
+  uses-material-design: true
