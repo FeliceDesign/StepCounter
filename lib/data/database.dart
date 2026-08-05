@@ -2,6 +2,8 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:flutter/foundation.dart';
 
+import '../detection/activity.dart';
+
 part 'database.g.dart';
 
 /// Step counts bucketed by minute.
@@ -14,10 +16,19 @@ class StepMinutes extends Table {
   /// Minutes since the Unix epoch, in local wall-clock terms.
   IntColumn get minuteEpoch => integer()();
 
+  /// What the user was doing, as [Activity.id].
+  ///
+  /// Part of the primary key, so one minute can hold several rows — a minute
+  /// spent walking to a staircase and then climbing it genuinely contains two
+  /// kinds of step, and collapsing them would lose exactly what the coloured
+  /// chart is meant to show.
+  TextColumn get activity =>
+      text().withLength(min: 1, max: 16).withDefault(const Constant('unknown'))();
+
   IntColumn get steps => integer()();
 
   @override
-  Set<Column> get primaryKey => {minuteEpoch};
+  Set<Column> get primaryKey => {minuteEpoch, activity};
 }
 
 /// A recorded motion session with a user- or hardware-supplied step count.
@@ -38,6 +49,17 @@ class CalibrationSessions extends Table {
 
   /// Packed float32 samples, the same layout SensorSample.pack produces.
   BlobColumn get samples => blob()();
+
+  /// Packed barometer readings, or null for sessions recorded before stairs
+  /// existed. Kept in its own column rather than widened into [samples]: a
+  /// barometer reports a few times a second against the accelerometer's fifty,
+  /// and adding an eighth float would have made old blobs ambiguous by length.
+  BlobColumn get pressureSamples => blob().nullable()();
+
+  /// What the user said they were doing, as [Activity.id]. Null when they did
+  /// not say, which is every automatically captured window.
+  TextColumn get declaredActivity =>
+      text().withLength(min: 1, max: 16).nullable()();
 }
 
 /// Every parameter vector the app has ever adopted, newest last.
@@ -48,6 +70,10 @@ class CalibrationVersions extends Table {
   IntColumn get id => integer().autoIncrement()();
   IntColumn get createdAt => integer()();
   TextColumn get paramsJson => text()();
+
+  /// Activity-classifier thresholds adopted at the same time. Null for versions
+  /// recorded before activity detection existed.
+  TextColumn get activityParamsJson => text().nullable()();
 
   /// 'factory', 'manual', 'automatic', or 'manual-slider'.
   TextColumn get source => text().withLength(min: 1, max: 16)();
@@ -64,31 +90,55 @@ class AppDatabase extends _$AppDatabase {
       : super(executor ?? driftDatabase(name: 'stepcounter'));
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) => m.createAll(),
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            // Existing rows predate activity detection, so they are honestly
+            // labelled 'unknown' rather than guessed at as walking. SQLite
+            // cannot alter a primary key in place, hence the table rebuild.
+            await m.database
+                .customStatement('ALTER TABLE step_minutes RENAME TO _step_minutes_v1');
+            await m.createTable(stepMinutes);
+            await m.database.customStatement(
+              "INSERT INTO step_minutes (minute_epoch, activity, steps) "
+              "SELECT minute_epoch, 'unknown', steps FROM _step_minutes_v1",
+            );
+            await m.database.customStatement('DROP TABLE _step_minutes_v1');
+
+            await m.addColumn(calibrationSessions, calibrationSessions.pressureSamples);
+            await m.addColumn(calibrationSessions, calibrationSessions.declaredActivity);
+            await m.addColumn(calibrationVersions, calibrationVersions.activityParamsJson);
+          }
+        },
+      );
 
   // ---- Steps ------------------------------------------------------------
 
-  /// Adds steps to a minute bucket, summing with whatever is already there.
+  /// Adds steps to a minute/activity bucket, summing with what is there.
   ///
-  /// Additive rather than replacing because the same minute legitimately
-  /// receives more than one write: the service drains a partial bucket when the
+  /// Additive rather than replacing because the same bucket legitimately
+  /// receives more than one write: the service drains a partial minute when the
   /// UI opens, then keeps counting into that same minute.
-  Future<void> addSteps(int minuteEpoch, int steps) async {
+  Future<void> addSteps(int minuteEpoch, Activity activity, int steps) async {
     if (steps <= 0) return;
     await customStatement(
-      'INSERT INTO step_minutes (minute_epoch, steps) VALUES (?, ?) '
-      'ON CONFLICT(minute_epoch) DO UPDATE SET steps = steps + excluded.steps',
-      [minuteEpoch, steps],
+      'INSERT INTO step_minutes (minute_epoch, activity, steps) VALUES (?, ?, ?) '
+      'ON CONFLICT(minute_epoch, activity) DO UPDATE SET steps = steps + excluded.steps',
+      [minuteEpoch, activity.id, steps],
     );
   }
 
   /// Commits a drained batch from the foreground service in one transaction, so
   /// a crash mid-drain cannot leave half the steps recorded.
-  Future<void> addStepBatch(Map<int, int> buckets) async {
+  Future<void> addStepBatch(List<StepBucket> buckets) async {
     if (buckets.isEmpty) return;
     await transaction(() async {
-      for (final e in buckets.entries) {
-        await addSteps(e.key, e.value);
+      for (final b in buckets) {
+        await addSteps(b.minuteEpoch, b.activity, b.steps);
       }
     });
   }
@@ -125,28 +175,47 @@ class AppDatabase extends _$AppDatabase {
     final from = start.millisecondsSinceEpoch ~/ 60000;
     final to = end.millisecondsSinceEpoch ~/ 60000;
     final rows = await customSelect(
-      'SELECT minute_epoch, steps FROM step_minutes '
+      'SELECT minute_epoch, activity, steps FROM step_minutes '
       'WHERE minute_epoch >= ? AND minute_epoch < ? ORDER BY minute_epoch',
       variables: [Variable.withInt(from), Variable.withInt(to)],
       readsFrom: {stepMinutes},
     ).get();
 
-    final totals = <DateTime, int>{};
+    final totals = <DateTime, Map<Activity, int>>{};
     for (var d = DayMath.dayStart(start);
         d.isBefore(end);
         d = DayMath.nextDay(d)) {
-      totals[d] = 0;
+      totals[d] = <Activity, int>{};
     }
     for (final r in rows) {
       final ts = DateTime.fromMillisecondsSinceEpoch(
           r.read<int>('minute_epoch') * 60000);
       final day = DayMath.dayStart(ts);
-      totals[day] = (totals[day] ?? 0) + r.read<int>('steps');
+      final activity = Activity.fromId(r.read<String>('activity'));
+      final bucket = totals.putIfAbsent(day, () => <Activity, int>{});
+      bucket[activity] = (bucket[activity] ?? 0) + r.read<int>('steps');
     }
 
     final out = totals.entries.map((e) => DayTotal(e.key, e.value)).toList()
       ..sort((a, b) => a.day.compareTo(b.day));
     return out;
+  }
+
+  /// Step totals per activity across a range, for the history summary.
+  Future<Map<Activity, int>> activityTotals(DateTime start, DateTime end) async {
+    final from = start.millisecondsSinceEpoch ~/ 60000;
+    final to = end.millisecondsSinceEpoch ~/ 60000;
+    final rows = await customSelect(
+      'SELECT activity, SUM(steps) AS total FROM step_minutes '
+      'WHERE minute_epoch >= ? AND minute_epoch < ? GROUP BY activity',
+      variables: [Variable.withInt(from), Variable.withInt(to)],
+      readsFrom: {stepMinutes},
+    ).get();
+
+    return {
+      for (final r in rows)
+        Activity.fromId(r.read<String>('activity')): r.read<int>('total'),
+    };
   }
 
   /// Earliest recorded day, or null when there is no history yet.
@@ -231,11 +300,35 @@ class AppDatabase extends _$AppDatabase {
   Future<void> clearCalibrationVersions() => delete(calibrationVersions).go();
 }
 
+/// One bucket of steps handed over by the foreground service.
+@immutable
+class StepBucket {
+  const StepBucket({
+    required this.minuteEpoch,
+    required this.activity,
+    required this.steps,
+  });
+
+  final int minuteEpoch;
+  final Activity activity;
+  final int steps;
+}
+
 @immutable
 class DayTotal {
-  const DayTotal(this.day, this.steps);
+  const DayTotal(this.day, this.byActivity);
+
   final DateTime day;
-  final int steps;
+  final Map<Activity, int> byActivity;
+
+  int get steps => byActivity.values.fold(0, (a, b) => a + b);
+
+  int stepsIn(Activity a) => byActivity[a] ?? 0;
+
+  /// Stairs up and down are counted separately but almost always shown
+  /// together — the distinction matters for calibration, not for a bar chart.
+  int get stairsSteps =>
+      stepsIn(Activity.stairsUp) + stepsIn(Activity.stairsDown);
 }
 
 /// Local-time day arithmetic.

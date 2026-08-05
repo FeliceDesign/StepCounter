@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stepcounter/data/database.dart';
+import 'package:stepcounter/detection/activity.dart';
 import 'package:stepcounter/detection/calibration_params.dart';
 
 void main() {
@@ -16,8 +17,8 @@ void main() {
   group('step buckets', () {
     test('writes to the same minute accumulate rather than replace', () async {
       final m = minuteOf(DateTime.now());
-      await db.addSteps(m, 5);
-      await db.addSteps(m, 7);
+      await db.addSteps(m, Activity.walking, 5);
+      await db.addSteps(m, Activity.walking, 7);
 
       final start = DayMath.dayStart(DateTime.now());
       expect(await db.stepsBetween(start, DayMath.nextDay(start)), 12);
@@ -25,15 +26,19 @@ void main() {
 
     test('ignores non-positive counts', () async {
       final m = minuteOf(DateTime.now());
-      await db.addSteps(m, 0);
-      await db.addSteps(m, -3);
+      await db.addSteps(m, Activity.walking, 0);
+      await db.addSteps(m, Activity.walking, -3);
       final start = DayMath.dayStart(DateTime.now());
       expect(await db.stepsBetween(start, DayMath.nextDay(start)), 0);
     });
 
     test('a drained batch commits every bucket', () async {
       final base = minuteOf(DateTime.now());
-      await db.addStepBatch({base - 2: 3, base - 1: 4, base: 5});
+      await db.addStepBatch([
+        StepBucket(minuteEpoch: base - 2, activity: Activity.walking, steps: 3),
+        StepBucket(minuteEpoch: base - 1, activity: Activity.running, steps: 4),
+        StepBucket(minuteEpoch: base, activity: Activity.stairsUp, steps: 5),
+      ]);
       final start = DayMath.dayStart(DateTime.now());
       expect(await db.stepsBetween(start, DayMath.nextDay(start)), 12);
     });
@@ -41,8 +46,8 @@ void main() {
     test('range query excludes its end bound', () async {
       final now = DateTime.now();
       final start = DayMath.dayStart(now);
-      await db.addSteps(minuteOf(start), 10);
-      await db.addSteps(minuteOf(DayMath.nextDay(start)), 99);
+      await db.addSteps(minuteOf(start), Activity.walking, 10);
+      await db.addSteps(minuteOf(DayMath.nextDay(start)), Activity.walking, 99);
 
       expect(await db.stepsBetween(start, DayMath.nextDay(start)), 10);
     });
@@ -51,7 +56,7 @@ void main() {
         () async {
       final today = DayMath.dayStart(DateTime.now());
       final threeDaysAgo = DayMath.addDays(today, -3);
-      await db.addSteps(minuteOf(threeDaysAgo.add(const Duration(hours: 9))), 250);
+      await db.addSteps(minuteOf(threeDaysAgo.add(const Duration(hours: 9))), Activity.walking, 250);
 
       final totals = await db.dailyTotals(
         DayMath.addDays(today, -6),
@@ -88,7 +93,7 @@ void main() {
     test('firstRecordedDay is null until something is recorded', () async {
       expect(await db.firstRecordedDay(), isNull);
       final today = DayMath.dayStart(DateTime.now());
-      await db.addSteps(minuteOf(today.add(const Duration(hours: 2))), 5);
+      await db.addSteps(minuteOf(today.add(const Duration(hours: 2))), Activity.walking, 5);
       expect(await db.firstRecordedDay(), today);
     });
   });
@@ -180,7 +185,7 @@ void main() {
 
   group('scoped reset', () {
     test('clearing history leaves calibration data intact', () async {
-      await db.addSteps(minuteOf(DateTime.now()), 100);
+      await db.addSteps(minuteOf(DateTime.now()), Activity.walking, 100);
       await db.insertSession(CalibrationSessionsCompanion.insert(
         recordedAt: 1,
         durationMs: 1,
@@ -204,7 +209,7 @@ void main() {
     });
 
     test('clearing calibration leaves step history intact', () async {
-      await db.addSteps(minuteOf(DateTime.now()), 100);
+      await db.addSteps(minuteOf(DateTime.now()), Activity.walking, 100);
       await db.insertSession(CalibrationSessionsCompanion.insert(
         recordedAt: 1,
         durationMs: 1,

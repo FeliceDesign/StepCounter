@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:stepcounter/data/database.dart';
+import 'package:stepcounter/detection/activity.dart';
 import 'package:stepcounter/detection/calibration_params.dart';
 import 'package:stepcounter/services/native_bridge.dart';
 
@@ -15,7 +17,13 @@ class FakeNativeBridge extends NativeBridge {
 
   final _events = StreamController<Map<String, dynamic>>.broadcast();
 
-  Map<int, int> pendingBuckets = {};
+  List<StepBucket> pendingBuckets = [];
+
+  /// Convenience for tests that do not care about activity.
+  void queueSteps(int minuteEpoch, int steps,
+          [Activity activity = Activity.walking]) =>
+      pendingBuckets.add(StepBucket(
+          minuteEpoch: minuteEpoch, activity: activity, steps: steps));
   List<AutoWindow> pendingWindows = [];
   Uint8List recordingResult = Uint8List(0);
 
@@ -24,6 +32,7 @@ class FakeNativeBridge extends NativeBridge {
   bool detectorReset = false;
   bool autoWindowsCleared = false;
   CalibrationParams? lastParamsPushed;
+  ActivityParams? lastActivityParamsPushed;
   Map<String, dynamic> diagnosticsPayload = const {};
 
   int drainCallCount = 0;
@@ -49,10 +58,10 @@ class FakeNativeBridge extends NativeBridge {
   Future<bool> get isRunning async => serviceRunning;
 
   @override
-  Future<Map<int, int>> drainBuckets() async {
+  Future<List<StepBucket>> drainBuckets() async {
     drainCallCount++;
     final out = pendingBuckets;
-    pendingBuckets = {};
+    pendingBuckets = [];
     return out;
   }
 
@@ -69,6 +78,11 @@ class FakeNativeBridge extends NativeBridge {
   @override
   Future<void> setParams(CalibrationParams params) async {
     lastParamsPushed = params;
+  }
+
+  @override
+  Future<void> setActivityParams(ActivityParams params) async {
+    lastActivityParamsPushed = params;
   }
 
   @override

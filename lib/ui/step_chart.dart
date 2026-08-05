@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../data/database.dart';
+import '../detection/activity.dart';
+import 'activity_palette.dart';
 
 /// Bar chart of daily step totals, shared by the home screen's 7-day view and
 /// the full history screen.
@@ -53,6 +55,19 @@ class StepChart extends StatelessWidget {
             getTooltipColor: (_) => scheme.inverseSurface,
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
               final day = days[group.x];
+              final faint = TextStyle(
+                color: scheme.onInverseSurface.withValues(alpha: 0.8),
+                fontWeight: FontWeight.normal,
+                fontSize: 12,
+              );
+
+              // Breakdown only when there is one — on a day of plain walking an
+              // extra line saying "walking" is noise.
+              final parts = <Activity, int>{
+                for (final a in ActivityPalette.stackOrder)
+                  if (day.stepsIn(a) > 0) a: day.stepsIn(a),
+              };
+
               return BarTooltipItem(
                 '${NumberFormat.decimalPattern().format(day.steps)}\n',
                 TextStyle(
@@ -60,14 +75,14 @@ class StepChart extends StatelessWidget {
                   fontWeight: FontWeight.bold,
                 ),
                 children: [
-                  TextSpan(
-                    text: DateFormat.MMMEd().format(day.day),
-                    style: TextStyle(
-                      color: scheme.onInverseSurface.withValues(alpha: 0.8),
-                      fontWeight: FontWeight.normal,
-                      fontSize: 12,
-                    ),
-                  ),
+                  TextSpan(text: DateFormat.MMMEd().format(day.day), style: faint),
+                  if (parts.length > 1)
+                    for (final e in parts.entries)
+                      TextSpan(
+                        text: '\n${ActivityPalette.legendLabel(e.key)}  '
+                            '${NumberFormat.decimalPattern().format(e.value)}',
+                        style: faint,
+                      ),
                 ],
               );
             },
@@ -145,19 +160,42 @@ class StepChart extends StatelessWidget {
           for (var i = 0; i < days.length; i++)
             BarChartGroupData(
               x: i,
-              barRods: [
-                BarChartRodData(
-                  toY: days[i].steps.toDouble(),
-                  width: (220 / days.length).clamp(3.0, 22.0),
-                  borderRadius: BorderRadius.circular(4),
-                  color: highlightLast && i == days.length - 1
-                      ? scheme.primary
-                      : scheme.primary.withValues(alpha: 0.45),
-                ),
-              ],
+              barRods: [_rod(context, days[i], i)],
             ),
         ],
       ),
+    );
+  }
+
+  /// One bar, stacked by activity.
+  ///
+  /// Days before today are drawn slightly translucent so today still reads as
+  /// the focus of the chart without needing a different hue, which would have
+  /// collided with the activity colours.
+  BarChartRodData _rod(BuildContext context, DayTotal day, int index) {
+    final isLast = index == days.length - 1;
+    final dim = highlightLast && !isLast;
+
+    var from = 0.0;
+    final stack = <BarChartRodStackItem>[];
+    for (final activity in ActivityPalette.stackOrder) {
+      final steps = day.stepsIn(activity);
+      if (steps <= 0) continue;
+      final to = from + steps;
+      var colour = ActivityPalette.of(context, activity);
+      if (dim) colour = colour.withValues(alpha: 0.55);
+      stack.add(BarChartRodStackItem(from, to, colour));
+      from = to;
+    }
+
+    return BarChartRodData(
+      toY: day.steps.toDouble(),
+      width: (220 / days.length).clamp(3.0, 22.0),
+      borderRadius: BorderRadius.circular(4),
+      // Shows through only when a bar is empty; every visible bar is covered
+      // by its stack items.
+      color: Colors.transparent,
+      rodStackItems: stack,
     );
   }
 }

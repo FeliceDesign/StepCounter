@@ -3,10 +3,11 @@ import 'dart:async';
 import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 
+import '../detection/activity.dart';
 import '../detection/calibration_optimizer.dart';
 import '../detection/calibration_params.dart';
 import '../detection/sensor_sample.dart';
-import '../detection/step_detector.dart';
+import '../detection/motion_pipeline.dart';
 import '../services/native_bridge.dart';
 import 'database.dart';
 
@@ -36,6 +37,9 @@ class StepRepository extends ChangeNotifier {
 
   CalibrationParams _params = CalibrationParams.factory;
   CalibrationParams get params => _params;
+
+  ActivityParams _activityParams = ActivityParams.factory;
+  ActivityParams get activityParams => _activityParams;
 
   bool _initialised = false;
   bool get initialised => _initialised;
@@ -118,6 +122,9 @@ class StepRepository extends ChangeNotifier {
   Future<List<DayTotal>> range(DateTime start, DateTime end) =>
       db.dailyTotals(start, end);
 
+  Future<Map<Activity, int>> activityTotals(DateTime start, DateTime end) =>
+      db.activityTotals(start, end);
+
   Future<DateTime?> firstRecordedDay() => db.firstRecordedDay();
 
   // ---- Calibration parameters -------------------------------------------
@@ -127,7 +134,16 @@ class StepRepository extends ChangeNotifier {
     _params = active == null
         ? CalibrationParams.factory
         : CalibrationParams.fromJson(active.paramsJson);
+
+    // Null for versions adopted before activity detection existed, which is
+    // why this falls back rather than assuming the column is populated.
+    final activityJson = active?.activityParamsJson;
+    _activityParams = activityJson == null
+        ? ActivityParams.factory
+        : ActivityParams.fromJson(activityJson);
+
     await bridge.setParams(_params);
+    await bridge.setActivityParams(_activityParams);
   }
 
   /// Adopts a parameter set, recording it as a new version and pushing it to
@@ -135,21 +151,28 @@ class StepRepository extends ChangeNotifier {
   Future<void> adoptParams(
     CalibrationParams params, {
     required String source,
+    ActivityParams? activityParams,
     double? holdoutError,
     double? baselineError,
     int sessionCount = 0,
   }) async {
     final clamped = params.clamped();
+    final activityClamped = (activityParams ?? _activityParams).clamped();
+
     await db.activateVersion(CalibrationVersionsCompanion.insert(
       createdAt: DateTime.now().millisecondsSinceEpoch,
       paramsJson: clamped.toJson(),
+      activityParamsJson: Value(activityClamped.toJson()),
       source: source,
       holdoutError: Value(holdoutError),
       baselineError: Value(baselineError),
       sessionCount: Value(sessionCount),
     ));
+
     _params = clamped;
+    _activityParams = activityClamped;
     await bridge.setParams(clamped);
+    await bridge.setActivityParams(activityClamped);
     notifyListeners();
   }
 
@@ -161,10 +184,16 @@ class StepRepository extends ChangeNotifier {
     required Uint8List samples,
     required int actualSteps,
     required int durationMs,
+    Uint8List? pressureSamples,
+    Activity? declaredActivity,
   }) async {
-    final detected = StepDetector.countSteps(
+    final detected = MotionPipeline.replayTotal(
       SensorSample.unpack(samples),
+      pressure: pressureSamples == null
+          ? const []
+          : PressureSample.unpack(pressureSamples),
       params: _params,
+      activityParams: _activityParams,
     );
     await db.insertSession(CalibrationSessionsCompanion.insert(
       recordedAt: DateTime.now().millisecondsSinceEpoch,
@@ -173,6 +202,8 @@ class StepRepository extends ChangeNotifier {
       detectedSteps: detected,
       source: 'manual',
       samples: samples,
+      pressureSamples: Value(pressureSamples),
+      declaredActivity: Value(declaredActivity?.id),
     ));
     await db.trimSessions();
     notifyListeners();
@@ -197,6 +228,7 @@ class StepRepository extends ChangeNotifier {
         detectedSteps: w.ourCount,
         source: 'automatic',
         samples: w.samples,
+        pressureSamples: Value(w.pressureSamples),
       ));
     }
     await db.trimSessions();

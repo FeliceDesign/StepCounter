@@ -33,7 +33,8 @@ void main() {
   group('draining from the service', () {
     test('commits drained buckets to the database', () async {
       final m = minuteOf(DateTime.now());
-      bridge.pendingBuckets = {m - 1: 10, m: 15};
+      bridge.queueSteps(m - 1, 10);
+      bridge.queueSteps(m, 15);
 
       await repo.drainFromService();
 
@@ -42,7 +43,7 @@ void main() {
 
     test('a second drain does not double count', () async {
       final m = minuteOf(DateTime.now());
-      bridge.pendingBuckets = {m: 30};
+      bridge.queueSteps(m, 30);
 
       await repo.drainFromService();
       await repo.drainFromService();
@@ -58,18 +59,18 @@ void main() {
     test('hands the authoritative daily total back to the service', () async {
       // The service only counts from when it started, so it cannot know the
       // total for a day that began before it did.
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 120};
+      bridge.queueSteps(minuteOf(DateTime.now()), 120);
       await repo.drainFromService();
       expect(bridge.todayTotalPushed, 120);
 
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 30};
+      bridge.queueSteps(minuteOf(DateTime.now()), 30);
       await repo.drainFromService();
       expect(bridge.todayTotalPushed, 150);
     });
 
     test('initialise pulls across what the service counted while away',
         () async {
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 42};
+      bridge.queueSteps(minuteOf(DateTime.now()), 42);
       await repo.initialise();
       expect(await repo.stepsToday(), 42);
     });
@@ -181,7 +182,7 @@ void main() {
 
     test('a step event from the service triggers a drain', () async {
       await repo.initialise();
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 7};
+      bridge.queueSteps(minuteOf(DateTime.now()), 7);
 
       bridge.emit({'type': 'steps', 'count': 7});
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -242,7 +243,7 @@ void main() {
   group('scoped reset', () {
     Future<void> seed() async {
       await repo.initialise();
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 500};
+      bridge.queueSteps(minuteOf(DateTime.now()), 500);
       await repo.drainFromService();
       await repo.saveManualSession(
         samples: SensorSample.pack(GaitFixtures.walk(steps: 20)),

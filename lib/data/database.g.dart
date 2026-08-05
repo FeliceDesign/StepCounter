@@ -18,7 +18,23 @@ class $StepMinutesTable extends StepMinutes
     aliasedName,
     false,
     type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _activityMeta = const VerificationMeta(
+    'activity',
+  );
+  @override
+  late final GeneratedColumn<String> activity = GeneratedColumn<String>(
+    'activity',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 16,
+    ),
+    type: DriftSqlType.string,
     requiredDuringInsert: false,
+    defaultValue: const Constant('unknown'),
   );
   static const VerificationMeta _stepsMeta = const VerificationMeta('steps');
   @override
@@ -30,7 +46,7 @@ class $StepMinutesTable extends StepMinutes
     requiredDuringInsert: true,
   );
   @override
-  List<GeneratedColumn> get $columns => [minuteEpoch, steps];
+  List<GeneratedColumn> get $columns => [minuteEpoch, activity, steps];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -51,6 +67,14 @@ class $StepMinutesTable extends StepMinutes
           _minuteEpochMeta,
         ),
       );
+    } else if (isInserting) {
+      context.missing(_minuteEpochMeta);
+    }
+    if (data.containsKey('activity')) {
+      context.handle(
+        _activityMeta,
+        activity.isAcceptableOrUnknown(data['activity']!, _activityMeta),
+      );
     }
     if (data.containsKey('steps')) {
       context.handle(
@@ -64,7 +88,7 @@ class $StepMinutesTable extends StepMinutes
   }
 
   @override
-  Set<GeneratedColumn> get $primaryKey => {minuteEpoch};
+  Set<GeneratedColumn> get $primaryKey => {minuteEpoch, activity};
   @override
   StepMinute map(Map<String, dynamic> data, {String? tablePrefix}) {
     final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
@@ -72,6 +96,10 @@ class $StepMinutesTable extends StepMinutes
       minuteEpoch: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}minute_epoch'],
+      )!,
+      activity: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}activity'],
       )!,
       steps: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
@@ -89,12 +117,25 @@ class $StepMinutesTable extends StepMinutes
 class StepMinute extends DataClass implements Insertable<StepMinute> {
   /// Minutes since the Unix epoch, in local wall-clock terms.
   final int minuteEpoch;
+
+  /// What the user was doing, as [Activity.id].
+  ///
+  /// Part of the primary key, so one minute can hold several rows — a minute
+  /// spent walking to a staircase and then climbing it genuinely contains two
+  /// kinds of step, and collapsing them would lose exactly what the coloured
+  /// chart is meant to show.
+  final String activity;
   final int steps;
-  const StepMinute({required this.minuteEpoch, required this.steps});
+  const StepMinute({
+    required this.minuteEpoch,
+    required this.activity,
+    required this.steps,
+  });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['minute_epoch'] = Variable<int>(minuteEpoch);
+    map['activity'] = Variable<String>(activity);
     map['steps'] = Variable<int>(steps);
     return map;
   }
@@ -102,6 +143,7 @@ class StepMinute extends DataClass implements Insertable<StepMinute> {
   StepMinutesCompanion toCompanion(bool nullToAbsent) {
     return StepMinutesCompanion(
       minuteEpoch: Value(minuteEpoch),
+      activity: Value(activity),
       steps: Value(steps),
     );
   }
@@ -113,6 +155,7 @@ class StepMinute extends DataClass implements Insertable<StepMinute> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return StepMinute(
       minuteEpoch: serializer.fromJson<int>(json['minuteEpoch']),
+      activity: serializer.fromJson<String>(json['activity']),
       steps: serializer.fromJson<int>(json['steps']),
     );
   }
@@ -121,19 +164,23 @@ class StepMinute extends DataClass implements Insertable<StepMinute> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
       'minuteEpoch': serializer.toJson<int>(minuteEpoch),
+      'activity': serializer.toJson<String>(activity),
       'steps': serializer.toJson<int>(steps),
     };
   }
 
-  StepMinute copyWith({int? minuteEpoch, int? steps}) => StepMinute(
-    minuteEpoch: minuteEpoch ?? this.minuteEpoch,
-    steps: steps ?? this.steps,
-  );
+  StepMinute copyWith({int? minuteEpoch, String? activity, int? steps}) =>
+      StepMinute(
+        minuteEpoch: minuteEpoch ?? this.minuteEpoch,
+        activity: activity ?? this.activity,
+        steps: steps ?? this.steps,
+      );
   StepMinute copyWithCompanion(StepMinutesCompanion data) {
     return StepMinute(
       minuteEpoch: data.minuteEpoch.present
           ? data.minuteEpoch.value
           : this.minuteEpoch,
+      activity: data.activity.present ? data.activity.value : this.activity,
       steps: data.steps.present ? data.steps.value : this.steps,
     );
   }
@@ -142,46 +189,66 @@ class StepMinute extends DataClass implements Insertable<StepMinute> {
   String toString() {
     return (StringBuffer('StepMinute(')
           ..write('minuteEpoch: $minuteEpoch, ')
+          ..write('activity: $activity, ')
           ..write('steps: $steps')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(minuteEpoch, steps);
+  int get hashCode => Object.hash(minuteEpoch, activity, steps);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is StepMinute &&
           other.minuteEpoch == this.minuteEpoch &&
+          other.activity == this.activity &&
           other.steps == this.steps);
 }
 
 class StepMinutesCompanion extends UpdateCompanion<StepMinute> {
   final Value<int> minuteEpoch;
+  final Value<String> activity;
   final Value<int> steps;
+  final Value<int> rowid;
   const StepMinutesCompanion({
     this.minuteEpoch = const Value.absent(),
+    this.activity = const Value.absent(),
     this.steps = const Value.absent(),
+    this.rowid = const Value.absent(),
   });
   StepMinutesCompanion.insert({
-    this.minuteEpoch = const Value.absent(),
+    required int minuteEpoch,
+    this.activity = const Value.absent(),
     required int steps,
-  }) : steps = Value(steps);
+    this.rowid = const Value.absent(),
+  }) : minuteEpoch = Value(minuteEpoch),
+       steps = Value(steps);
   static Insertable<StepMinute> custom({
     Expression<int>? minuteEpoch,
+    Expression<String>? activity,
     Expression<int>? steps,
+    Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (minuteEpoch != null) 'minute_epoch': minuteEpoch,
+      if (activity != null) 'activity': activity,
       if (steps != null) 'steps': steps,
+      if (rowid != null) 'rowid': rowid,
     });
   }
 
-  StepMinutesCompanion copyWith({Value<int>? minuteEpoch, Value<int>? steps}) {
+  StepMinutesCompanion copyWith({
+    Value<int>? minuteEpoch,
+    Value<String>? activity,
+    Value<int>? steps,
+    Value<int>? rowid,
+  }) {
     return StepMinutesCompanion(
       minuteEpoch: minuteEpoch ?? this.minuteEpoch,
+      activity: activity ?? this.activity,
       steps: steps ?? this.steps,
+      rowid: rowid ?? this.rowid,
     );
   }
 
@@ -191,8 +258,14 @@ class StepMinutesCompanion extends UpdateCompanion<StepMinute> {
     if (minuteEpoch.present) {
       map['minute_epoch'] = Variable<int>(minuteEpoch.value);
     }
+    if (activity.present) {
+      map['activity'] = Variable<String>(activity.value);
+    }
     if (steps.present) {
       map['steps'] = Variable<int>(steps.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
     }
     return map;
   }
@@ -201,7 +274,9 @@ class StepMinutesCompanion extends UpdateCompanion<StepMinute> {
   String toString() {
     return (StringBuffer('StepMinutesCompanion(')
           ..write('minuteEpoch: $minuteEpoch, ')
-          ..write('steps: $steps')
+          ..write('activity: $activity, ')
+          ..write('steps: $steps, ')
+          ..write('rowid: $rowid')
           ..write(')'))
         .toString();
   }
@@ -294,6 +369,33 @@ class $CalibrationSessionsTable extends CalibrationSessions
     type: DriftSqlType.blob,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _pressureSamplesMeta = const VerificationMeta(
+    'pressureSamples',
+  );
+  @override
+  late final GeneratedColumn<Uint8List> pressureSamples =
+      GeneratedColumn<Uint8List>(
+        'pressure_samples',
+        aliasedName,
+        true,
+        type: DriftSqlType.blob,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _declaredActivityMeta = const VerificationMeta(
+    'declaredActivity',
+  );
+  @override
+  late final GeneratedColumn<String> declaredActivity = GeneratedColumn<String>(
+    'declared_activity',
+    aliasedName,
+    true,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 16,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -303,6 +405,8 @@ class $CalibrationSessionsTable extends CalibrationSessions
     detectedSteps,
     source,
     samples,
+    pressureSamples,
+    declaredActivity,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -373,6 +477,24 @@ class $CalibrationSessionsTable extends CalibrationSessions
     } else if (isInserting) {
       context.missing(_samplesMeta);
     }
+    if (data.containsKey('pressure_samples')) {
+      context.handle(
+        _pressureSamplesMeta,
+        pressureSamples.isAcceptableOrUnknown(
+          data['pressure_samples']!,
+          _pressureSamplesMeta,
+        ),
+      );
+    }
+    if (data.containsKey('declared_activity')) {
+      context.handle(
+        _declaredActivityMeta,
+        declaredActivity.isAcceptableOrUnknown(
+          data['declared_activity']!,
+          _declaredActivityMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -410,6 +532,14 @@ class $CalibrationSessionsTable extends CalibrationSessions
         DriftSqlType.blob,
         data['${effectivePrefix}samples'],
       )!,
+      pressureSamples: attachedDatabase.typeMapping.read(
+        DriftSqlType.blob,
+        data['${effectivePrefix}pressure_samples'],
+      ),
+      declaredActivity: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}declared_activity'],
+      ),
     );
   }
 
@@ -437,6 +567,16 @@ class CalibrationSession extends DataClass
 
   /// Packed float32 samples, the same layout SensorSample.pack produces.
   final Uint8List samples;
+
+  /// Packed barometer readings, or null for sessions recorded before stairs
+  /// existed. Kept in its own column rather than widened into [samples]: a
+  /// barometer reports a few times a second against the accelerometer's fifty,
+  /// and adding an eighth float would have made old blobs ambiguous by length.
+  final Uint8List? pressureSamples;
+
+  /// What the user said they were doing, as [Activity.id]. Null when they did
+  /// not say, which is every automatically captured window.
+  final String? declaredActivity;
   const CalibrationSession({
     required this.id,
     required this.recordedAt,
@@ -445,6 +585,8 @@ class CalibrationSession extends DataClass
     required this.detectedSteps,
     required this.source,
     required this.samples,
+    this.pressureSamples,
+    this.declaredActivity,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -456,6 +598,12 @@ class CalibrationSession extends DataClass
     map['detected_steps'] = Variable<int>(detectedSteps);
     map['source'] = Variable<String>(source);
     map['samples'] = Variable<Uint8List>(samples);
+    if (!nullToAbsent || pressureSamples != null) {
+      map['pressure_samples'] = Variable<Uint8List>(pressureSamples);
+    }
+    if (!nullToAbsent || declaredActivity != null) {
+      map['declared_activity'] = Variable<String>(declaredActivity);
+    }
     return map;
   }
 
@@ -468,6 +616,12 @@ class CalibrationSession extends DataClass
       detectedSteps: Value(detectedSteps),
       source: Value(source),
       samples: Value(samples),
+      pressureSamples: pressureSamples == null && nullToAbsent
+          ? const Value.absent()
+          : Value(pressureSamples),
+      declaredActivity: declaredActivity == null && nullToAbsent
+          ? const Value.absent()
+          : Value(declaredActivity),
     );
   }
 
@@ -484,6 +638,8 @@ class CalibrationSession extends DataClass
       detectedSteps: serializer.fromJson<int>(json['detectedSteps']),
       source: serializer.fromJson<String>(json['source']),
       samples: serializer.fromJson<Uint8List>(json['samples']),
+      pressureSamples: serializer.fromJson<Uint8List?>(json['pressureSamples']),
+      declaredActivity: serializer.fromJson<String?>(json['declaredActivity']),
     );
   }
   @override
@@ -497,6 +653,8 @@ class CalibrationSession extends DataClass
       'detectedSteps': serializer.toJson<int>(detectedSteps),
       'source': serializer.toJson<String>(source),
       'samples': serializer.toJson<Uint8List>(samples),
+      'pressureSamples': serializer.toJson<Uint8List?>(pressureSamples),
+      'declaredActivity': serializer.toJson<String?>(declaredActivity),
     };
   }
 
@@ -508,6 +666,8 @@ class CalibrationSession extends DataClass
     int? detectedSteps,
     String? source,
     Uint8List? samples,
+    Value<Uint8List?> pressureSamples = const Value.absent(),
+    Value<String?> declaredActivity = const Value.absent(),
   }) => CalibrationSession(
     id: id ?? this.id,
     recordedAt: recordedAt ?? this.recordedAt,
@@ -516,6 +676,12 @@ class CalibrationSession extends DataClass
     detectedSteps: detectedSteps ?? this.detectedSteps,
     source: source ?? this.source,
     samples: samples ?? this.samples,
+    pressureSamples: pressureSamples.present
+        ? pressureSamples.value
+        : this.pressureSamples,
+    declaredActivity: declaredActivity.present
+        ? declaredActivity.value
+        : this.declaredActivity,
   );
   CalibrationSession copyWithCompanion(CalibrationSessionsCompanion data) {
     return CalibrationSession(
@@ -534,6 +700,12 @@ class CalibrationSession extends DataClass
           : this.detectedSteps,
       source: data.source.present ? data.source.value : this.source,
       samples: data.samples.present ? data.samples.value : this.samples,
+      pressureSamples: data.pressureSamples.present
+          ? data.pressureSamples.value
+          : this.pressureSamples,
+      declaredActivity: data.declaredActivity.present
+          ? data.declaredActivity.value
+          : this.declaredActivity,
     );
   }
 
@@ -546,7 +718,9 @@ class CalibrationSession extends DataClass
           ..write('actualSteps: $actualSteps, ')
           ..write('detectedSteps: $detectedSteps, ')
           ..write('source: $source, ')
-          ..write('samples: $samples')
+          ..write('samples: $samples, ')
+          ..write('pressureSamples: $pressureSamples, ')
+          ..write('declaredActivity: $declaredActivity')
           ..write(')'))
         .toString();
   }
@@ -560,6 +734,8 @@ class CalibrationSession extends DataClass
     detectedSteps,
     source,
     $driftBlobEquality.hash(samples),
+    $driftBlobEquality.hash(pressureSamples),
+    declaredActivity,
   );
   @override
   bool operator ==(Object other) =>
@@ -571,7 +747,12 @@ class CalibrationSession extends DataClass
           other.actualSteps == this.actualSteps &&
           other.detectedSteps == this.detectedSteps &&
           other.source == this.source &&
-          $driftBlobEquality.equals(other.samples, this.samples));
+          $driftBlobEquality.equals(other.samples, this.samples) &&
+          $driftBlobEquality.equals(
+            other.pressureSamples,
+            this.pressureSamples,
+          ) &&
+          other.declaredActivity == this.declaredActivity);
 }
 
 class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
@@ -582,6 +763,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
   final Value<int> detectedSteps;
   final Value<String> source;
   final Value<Uint8List> samples;
+  final Value<Uint8List?> pressureSamples;
+  final Value<String?> declaredActivity;
   const CalibrationSessionsCompanion({
     this.id = const Value.absent(),
     this.recordedAt = const Value.absent(),
@@ -590,6 +773,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     this.detectedSteps = const Value.absent(),
     this.source = const Value.absent(),
     this.samples = const Value.absent(),
+    this.pressureSamples = const Value.absent(),
+    this.declaredActivity = const Value.absent(),
   });
   CalibrationSessionsCompanion.insert({
     this.id = const Value.absent(),
@@ -599,6 +784,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     required int detectedSteps,
     required String source,
     required Uint8List samples,
+    this.pressureSamples = const Value.absent(),
+    this.declaredActivity = const Value.absent(),
   }) : recordedAt = Value(recordedAt),
        durationMs = Value(durationMs),
        actualSteps = Value(actualSteps),
@@ -613,6 +800,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     Expression<int>? detectedSteps,
     Expression<String>? source,
     Expression<Uint8List>? samples,
+    Expression<Uint8List>? pressureSamples,
+    Expression<String>? declaredActivity,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -622,6 +811,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
       if (detectedSteps != null) 'detected_steps': detectedSteps,
       if (source != null) 'source': source,
       if (samples != null) 'samples': samples,
+      if (pressureSamples != null) 'pressure_samples': pressureSamples,
+      if (declaredActivity != null) 'declared_activity': declaredActivity,
     });
   }
 
@@ -633,6 +824,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     Value<int>? detectedSteps,
     Value<String>? source,
     Value<Uint8List>? samples,
+    Value<Uint8List?>? pressureSamples,
+    Value<String?>? declaredActivity,
   }) {
     return CalibrationSessionsCompanion(
       id: id ?? this.id,
@@ -642,6 +835,8 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
       detectedSteps: detectedSteps ?? this.detectedSteps,
       source: source ?? this.source,
       samples: samples ?? this.samples,
+      pressureSamples: pressureSamples ?? this.pressureSamples,
+      declaredActivity: declaredActivity ?? this.declaredActivity,
     );
   }
 
@@ -669,6 +864,12 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     if (samples.present) {
       map['samples'] = Variable<Uint8List>(samples.value);
     }
+    if (pressureSamples.present) {
+      map['pressure_samples'] = Variable<Uint8List>(pressureSamples.value);
+    }
+    if (declaredActivity.present) {
+      map['declared_activity'] = Variable<String>(declaredActivity.value);
+    }
     return map;
   }
 
@@ -681,7 +882,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
           ..write('actualSteps: $actualSteps, ')
           ..write('detectedSteps: $detectedSteps, ')
           ..write('source: $source, ')
-          ..write('samples: $samples')
+          ..write('samples: $samples, ')
+          ..write('pressureSamples: $pressureSamples, ')
+          ..write('declaredActivity: $declaredActivity')
           ..write(')'))
         .toString();
   }
@@ -728,6 +931,17 @@ class $CalibrationVersionsTable extends CalibrationVersions
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _activityParamsJsonMeta =
+      const VerificationMeta('activityParamsJson');
+  @override
+  late final GeneratedColumn<String> activityParamsJson =
+      GeneratedColumn<String>(
+        'activity_params_json',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   static const VerificationMeta _sourceMeta = const VerificationMeta('source');
   @override
   late final GeneratedColumn<String> source = GeneratedColumn<String>(
@@ -795,6 +1009,7 @@ class $CalibrationVersionsTable extends CalibrationVersions
     id,
     createdAt,
     paramsJson,
+    activityParamsJson,
     source,
     holdoutError,
     baselineError,
@@ -831,6 +1046,15 @@ class $CalibrationVersionsTable extends CalibrationVersions
       );
     } else if (isInserting) {
       context.missing(_paramsJsonMeta);
+    }
+    if (data.containsKey('activity_params_json')) {
+      context.handle(
+        _activityParamsJsonMeta,
+        activityParamsJson.isAcceptableOrUnknown(
+          data['activity_params_json']!,
+          _activityParamsJsonMeta,
+        ),
+      );
     }
     if (data.containsKey('source')) {
       context.handle(
@@ -894,6 +1118,10 @@ class $CalibrationVersionsTable extends CalibrationVersions
         DriftSqlType.string,
         data['${effectivePrefix}params_json'],
       )!,
+      activityParamsJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}activity_params_json'],
+      ),
       source: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}source'],
@@ -929,6 +1157,10 @@ class CalibrationVersion extends DataClass
   final int createdAt;
   final String paramsJson;
 
+  /// Activity-classifier thresholds adopted at the same time. Null for versions
+  /// recorded before activity detection existed.
+  final String? activityParamsJson;
+
   /// 'factory', 'manual', 'automatic', or 'manual-slider'.
   final String source;
   final double? holdoutError;
@@ -939,6 +1171,7 @@ class CalibrationVersion extends DataClass
     required this.id,
     required this.createdAt,
     required this.paramsJson,
+    this.activityParamsJson,
     required this.source,
     this.holdoutError,
     this.baselineError,
@@ -951,6 +1184,9 @@ class CalibrationVersion extends DataClass
     map['id'] = Variable<int>(id);
     map['created_at'] = Variable<int>(createdAt);
     map['params_json'] = Variable<String>(paramsJson);
+    if (!nullToAbsent || activityParamsJson != null) {
+      map['activity_params_json'] = Variable<String>(activityParamsJson);
+    }
     map['source'] = Variable<String>(source);
     if (!nullToAbsent || holdoutError != null) {
       map['holdout_error'] = Variable<double>(holdoutError);
@@ -968,6 +1204,9 @@ class CalibrationVersion extends DataClass
       id: Value(id),
       createdAt: Value(createdAt),
       paramsJson: Value(paramsJson),
+      activityParamsJson: activityParamsJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(activityParamsJson),
       source: Value(source),
       holdoutError: holdoutError == null && nullToAbsent
           ? const Value.absent()
@@ -989,6 +1228,9 @@ class CalibrationVersion extends DataClass
       id: serializer.fromJson<int>(json['id']),
       createdAt: serializer.fromJson<int>(json['createdAt']),
       paramsJson: serializer.fromJson<String>(json['paramsJson']),
+      activityParamsJson: serializer.fromJson<String?>(
+        json['activityParamsJson'],
+      ),
       source: serializer.fromJson<String>(json['source']),
       holdoutError: serializer.fromJson<double?>(json['holdoutError']),
       baselineError: serializer.fromJson<double?>(json['baselineError']),
@@ -1003,6 +1245,7 @@ class CalibrationVersion extends DataClass
       'id': serializer.toJson<int>(id),
       'createdAt': serializer.toJson<int>(createdAt),
       'paramsJson': serializer.toJson<String>(paramsJson),
+      'activityParamsJson': serializer.toJson<String?>(activityParamsJson),
       'source': serializer.toJson<String>(source),
       'holdoutError': serializer.toJson<double?>(holdoutError),
       'baselineError': serializer.toJson<double?>(baselineError),
@@ -1015,6 +1258,7 @@ class CalibrationVersion extends DataClass
     int? id,
     int? createdAt,
     String? paramsJson,
+    Value<String?> activityParamsJson = const Value.absent(),
     String? source,
     Value<double?> holdoutError = const Value.absent(),
     Value<double?> baselineError = const Value.absent(),
@@ -1024,6 +1268,9 @@ class CalibrationVersion extends DataClass
     id: id ?? this.id,
     createdAt: createdAt ?? this.createdAt,
     paramsJson: paramsJson ?? this.paramsJson,
+    activityParamsJson: activityParamsJson.present
+        ? activityParamsJson.value
+        : this.activityParamsJson,
     source: source ?? this.source,
     holdoutError: holdoutError.present ? holdoutError.value : this.holdoutError,
     baselineError: baselineError.present
@@ -1039,6 +1286,9 @@ class CalibrationVersion extends DataClass
       paramsJson: data.paramsJson.present
           ? data.paramsJson.value
           : this.paramsJson,
+      activityParamsJson: data.activityParamsJson.present
+          ? data.activityParamsJson.value
+          : this.activityParamsJson,
       source: data.source.present ? data.source.value : this.source,
       holdoutError: data.holdoutError.present
           ? data.holdoutError.value
@@ -1059,6 +1309,7 @@ class CalibrationVersion extends DataClass
           ..write('id: $id, ')
           ..write('createdAt: $createdAt, ')
           ..write('paramsJson: $paramsJson, ')
+          ..write('activityParamsJson: $activityParamsJson, ')
           ..write('source: $source, ')
           ..write('holdoutError: $holdoutError, ')
           ..write('baselineError: $baselineError, ')
@@ -1073,6 +1324,7 @@ class CalibrationVersion extends DataClass
     id,
     createdAt,
     paramsJson,
+    activityParamsJson,
     source,
     holdoutError,
     baselineError,
@@ -1086,6 +1338,7 @@ class CalibrationVersion extends DataClass
           other.id == this.id &&
           other.createdAt == this.createdAt &&
           other.paramsJson == this.paramsJson &&
+          other.activityParamsJson == this.activityParamsJson &&
           other.source == this.source &&
           other.holdoutError == this.holdoutError &&
           other.baselineError == this.baselineError &&
@@ -1097,6 +1350,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
   final Value<int> id;
   final Value<int> createdAt;
   final Value<String> paramsJson;
+  final Value<String?> activityParamsJson;
   final Value<String> source;
   final Value<double?> holdoutError;
   final Value<double?> baselineError;
@@ -1106,6 +1360,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
     this.id = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.paramsJson = const Value.absent(),
+    this.activityParamsJson = const Value.absent(),
     this.source = const Value.absent(),
     this.holdoutError = const Value.absent(),
     this.baselineError = const Value.absent(),
@@ -1116,6 +1371,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
     this.id = const Value.absent(),
     required int createdAt,
     required String paramsJson,
+    this.activityParamsJson = const Value.absent(),
     required String source,
     this.holdoutError = const Value.absent(),
     this.baselineError = const Value.absent(),
@@ -1128,6 +1384,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
     Expression<int>? id,
     Expression<int>? createdAt,
     Expression<String>? paramsJson,
+    Expression<String>? activityParamsJson,
     Expression<String>? source,
     Expression<double>? holdoutError,
     Expression<double>? baselineError,
@@ -1138,6 +1395,8 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
       if (id != null) 'id': id,
       if (createdAt != null) 'created_at': createdAt,
       if (paramsJson != null) 'params_json': paramsJson,
+      if (activityParamsJson != null)
+        'activity_params_json': activityParamsJson,
       if (source != null) 'source': source,
       if (holdoutError != null) 'holdout_error': holdoutError,
       if (baselineError != null) 'baseline_error': baselineError,
@@ -1150,6 +1409,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
     Value<int>? id,
     Value<int>? createdAt,
     Value<String>? paramsJson,
+    Value<String?>? activityParamsJson,
     Value<String>? source,
     Value<double?>? holdoutError,
     Value<double?>? baselineError,
@@ -1160,6 +1420,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
       id: id ?? this.id,
       createdAt: createdAt ?? this.createdAt,
       paramsJson: paramsJson ?? this.paramsJson,
+      activityParamsJson: activityParamsJson ?? this.activityParamsJson,
       source: source ?? this.source,
       holdoutError: holdoutError ?? this.holdoutError,
       baselineError: baselineError ?? this.baselineError,
@@ -1179,6 +1440,9 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
     }
     if (paramsJson.present) {
       map['params_json'] = Variable<String>(paramsJson.value);
+    }
+    if (activityParamsJson.present) {
+      map['activity_params_json'] = Variable<String>(activityParamsJson.value);
     }
     if (source.present) {
       map['source'] = Variable<String>(source.value);
@@ -1204,6 +1468,7 @@ class CalibrationVersionsCompanion extends UpdateCompanion<CalibrationVersion> {
           ..write('id: $id, ')
           ..write('createdAt: $createdAt, ')
           ..write('paramsJson: $paramsJson, ')
+          ..write('activityParamsJson: $activityParamsJson, ')
           ..write('source: $source, ')
           ..write('holdoutError: $holdoutError, ')
           ..write('baselineError: $baselineError, ')
@@ -1234,9 +1499,19 @@ abstract class _$AppDatabase extends GeneratedDatabase {
 }
 
 typedef $$StepMinutesTableCreateCompanionBuilder =
-    StepMinutesCompanion Function({Value<int> minuteEpoch, required int steps});
+    StepMinutesCompanion Function({
+      required int minuteEpoch,
+      Value<String> activity,
+      required int steps,
+      Value<int> rowid,
+    });
 typedef $$StepMinutesTableUpdateCompanionBuilder =
-    StepMinutesCompanion Function({Value<int> minuteEpoch, Value<int> steps});
+    StepMinutesCompanion Function({
+      Value<int> minuteEpoch,
+      Value<String> activity,
+      Value<int> steps,
+      Value<int> rowid,
+    });
 
 class $$StepMinutesTableFilterComposer
     extends Composer<_$AppDatabase, $StepMinutesTable> {
@@ -1249,6 +1524,11 @@ class $$StepMinutesTableFilterComposer
   });
   ColumnFilters<int> get minuteEpoch => $composableBuilder(
     column: $table.minuteEpoch,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get activity => $composableBuilder(
+    column: $table.activity,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1272,6 +1552,11 @@ class $$StepMinutesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get activity => $composableBuilder(
+    column: $table.activity,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get steps => $composableBuilder(
     column: $table.steps,
     builder: (column) => ColumnOrderings(column),
@@ -1291,6 +1576,9 @@ class $$StepMinutesTableAnnotationComposer
     column: $table.minuteEpoch,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get activity =>
+      $composableBuilder(column: $table.activity, builder: (column) => column);
 
   GeneratedColumn<int> get steps =>
       $composableBuilder(column: $table.steps, builder: (column) => column);
@@ -1328,16 +1616,26 @@ class $$StepMinutesTableTableManager
           updateCompanionCallback:
               ({
                 Value<int> minuteEpoch = const Value.absent(),
+                Value<String> activity = const Value.absent(),
                 Value<int> steps = const Value.absent(),
-              }) =>
-                  StepMinutesCompanion(minuteEpoch: minuteEpoch, steps: steps),
+                Value<int> rowid = const Value.absent(),
+              }) => StepMinutesCompanion(
+                minuteEpoch: minuteEpoch,
+                activity: activity,
+                steps: steps,
+                rowid: rowid,
+              ),
           createCompanionCallback:
               ({
-                Value<int> minuteEpoch = const Value.absent(),
+                required int minuteEpoch,
+                Value<String> activity = const Value.absent(),
                 required int steps,
+                Value<int> rowid = const Value.absent(),
               }) => StepMinutesCompanion.insert(
                 minuteEpoch: minuteEpoch,
+                activity: activity,
                 steps: steps,
+                rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
@@ -1373,6 +1671,8 @@ typedef $$CalibrationSessionsTableCreateCompanionBuilder =
       required int detectedSteps,
       required String source,
       required Uint8List samples,
+      Value<Uint8List?> pressureSamples,
+      Value<String?> declaredActivity,
     });
 typedef $$CalibrationSessionsTableUpdateCompanionBuilder =
     CalibrationSessionsCompanion Function({
@@ -1383,6 +1683,8 @@ typedef $$CalibrationSessionsTableUpdateCompanionBuilder =
       Value<int> detectedSteps,
       Value<String> source,
       Value<Uint8List> samples,
+      Value<Uint8List?> pressureSamples,
+      Value<String?> declaredActivity,
     });
 
 class $$CalibrationSessionsTableFilterComposer
@@ -1426,6 +1728,16 @@ class $$CalibrationSessionsTableFilterComposer
 
   ColumnFilters<Uint8List> get samples => $composableBuilder(
     column: $table.samples,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<Uint8List> get pressureSamples => $composableBuilder(
+    column: $table.pressureSamples,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get declaredActivity => $composableBuilder(
+    column: $table.declaredActivity,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -1473,6 +1785,16 @@ class $$CalibrationSessionsTableOrderingComposer
     column: $table.samples,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<Uint8List> get pressureSamples => $composableBuilder(
+    column: $table.pressureSamples,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get declaredActivity => $composableBuilder(
+    column: $table.declaredActivity,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$CalibrationSessionsTableAnnotationComposer
@@ -1512,6 +1834,16 @@ class $$CalibrationSessionsTableAnnotationComposer
 
   GeneratedColumn<Uint8List> get samples =>
       $composableBuilder(column: $table.samples, builder: (column) => column);
+
+  GeneratedColumn<Uint8List> get pressureSamples => $composableBuilder(
+    column: $table.pressureSamples,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get declaredActivity => $composableBuilder(
+    column: $table.declaredActivity,
+    builder: (column) => column,
+  );
 }
 
 class $$CalibrationSessionsTableTableManager
@@ -1564,6 +1896,8 @@ class $$CalibrationSessionsTableTableManager
                 Value<int> detectedSteps = const Value.absent(),
                 Value<String> source = const Value.absent(),
                 Value<Uint8List> samples = const Value.absent(),
+                Value<Uint8List?> pressureSamples = const Value.absent(),
+                Value<String?> declaredActivity = const Value.absent(),
               }) => CalibrationSessionsCompanion(
                 id: id,
                 recordedAt: recordedAt,
@@ -1572,6 +1906,8 @@ class $$CalibrationSessionsTableTableManager
                 detectedSteps: detectedSteps,
                 source: source,
                 samples: samples,
+                pressureSamples: pressureSamples,
+                declaredActivity: declaredActivity,
               ),
           createCompanionCallback:
               ({
@@ -1582,6 +1918,8 @@ class $$CalibrationSessionsTableTableManager
                 required int detectedSteps,
                 required String source,
                 required Uint8List samples,
+                Value<Uint8List?> pressureSamples = const Value.absent(),
+                Value<String?> declaredActivity = const Value.absent(),
               }) => CalibrationSessionsCompanion.insert(
                 id: id,
                 recordedAt: recordedAt,
@@ -1590,6 +1928,8 @@ class $$CalibrationSessionsTableTableManager
                 detectedSteps: detectedSteps,
                 source: source,
                 samples: samples,
+                pressureSamples: pressureSamples,
+                declaredActivity: declaredActivity,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
@@ -1625,6 +1965,7 @@ typedef $$CalibrationVersionsTableCreateCompanionBuilder =
       Value<int> id,
       required int createdAt,
       required String paramsJson,
+      Value<String?> activityParamsJson,
       required String source,
       Value<double?> holdoutError,
       Value<double?> baselineError,
@@ -1636,6 +1977,7 @@ typedef $$CalibrationVersionsTableUpdateCompanionBuilder =
       Value<int> id,
       Value<int> createdAt,
       Value<String> paramsJson,
+      Value<String?> activityParamsJson,
       Value<String> source,
       Value<double?> holdoutError,
       Value<double?> baselineError,
@@ -1664,6 +2006,11 @@ class $$CalibrationVersionsTableFilterComposer
 
   ColumnFilters<String> get paramsJson => $composableBuilder(
     column: $table.paramsJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get activityParamsJson => $composableBuilder(
+    column: $table.activityParamsJson,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1717,6 +2064,11 @@ class $$CalibrationVersionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get activityParamsJson => $composableBuilder(
+    column: $table.activityParamsJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get source => $composableBuilder(
     column: $table.source,
     builder: (column) => ColumnOrderings(column),
@@ -1760,6 +2112,11 @@ class $$CalibrationVersionsTableAnnotationComposer
 
   GeneratedColumn<String> get paramsJson => $composableBuilder(
     column: $table.paramsJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get activityParamsJson => $composableBuilder(
+    column: $table.activityParamsJson,
     builder: (column) => column,
   );
 
@@ -1831,6 +2188,7 @@ class $$CalibrationVersionsTableTableManager
                 Value<int> id = const Value.absent(),
                 Value<int> createdAt = const Value.absent(),
                 Value<String> paramsJson = const Value.absent(),
+                Value<String?> activityParamsJson = const Value.absent(),
                 Value<String> source = const Value.absent(),
                 Value<double?> holdoutError = const Value.absent(),
                 Value<double?> baselineError = const Value.absent(),
@@ -1840,6 +2198,7 @@ class $$CalibrationVersionsTableTableManager
                 id: id,
                 createdAt: createdAt,
                 paramsJson: paramsJson,
+                activityParamsJson: activityParamsJson,
                 source: source,
                 holdoutError: holdoutError,
                 baselineError: baselineError,
@@ -1851,6 +2210,7 @@ class $$CalibrationVersionsTableTableManager
                 Value<int> id = const Value.absent(),
                 required int createdAt,
                 required String paramsJson,
+                Value<String?> activityParamsJson = const Value.absent(),
                 required String source,
                 Value<double?> holdoutError = const Value.absent(),
                 Value<double?> baselineError = const Value.absent(),
@@ -1860,6 +2220,7 @@ class $$CalibrationVersionsTableTableManager
                 id: id,
                 createdAt: createdAt,
                 paramsJson: paramsJson,
+                activityParamsJson: activityParamsJson,
                 source: source,
                 holdoutError: holdoutError,
                 baselineError: baselineError,

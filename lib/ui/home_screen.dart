@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 
 import '../app_scope.dart';
 import '../data/database.dart';
+import '../detection/activity.dart';
+import 'activity_palette.dart';
 import 'history_screen.dart';
 import 'settings_screen.dart';
 import 'step_chart.dart';
@@ -207,6 +209,12 @@ class _WeekPanel extends StatelessWidget {
 
   final List<DayTotal> week;
 
+  static Set<Activity> _presentActivities(List<DayTotal> days) => {
+        for (final d in days)
+          for (final e in d.byActivity.entries)
+            if (e.value > 0) e.key,
+      };
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -249,6 +257,10 @@ class _WeekPanel extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const HistoryScreen()),
               ),
             ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 8, top: 8),
+            child: ActivityLegend(present: _presentActivities(week)),
           ),
         ],
       ),

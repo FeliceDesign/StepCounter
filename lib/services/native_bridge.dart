@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import '../data/database.dart';
+import '../detection/activity.dart';
 import '../detection/calibration_params.dart';
 
 /// A labelled window the service captured on its own, graded by the hardware
@@ -12,12 +14,17 @@ class AutoWindow {
     required this.ourCount,
     required this.hardwareCount,
     required this.samples,
+    this.pressureSamples,
   });
 
   final int recordedAt;
   final int ourCount;
   final int hardwareCount;
   final Uint8List samples;
+
+  /// Null when the device has no barometer, so stairs can never be inferred
+  /// from this window.
+  final Uint8List? pressureSamples;
 }
 
 /// Everything Settings shows about the health of the counting pipeline.
@@ -29,6 +36,7 @@ class Diagnostics {
   bool get hasAccelerometer => raw['hasAccelerometer'] == true;
   bool get hasGyroscope => raw['hasGyroscope'] == true;
   bool get hasHardwareCounter => raw['hasHardwareCounter'] == true;
+  bool get hasBarometer => raw['hasBarometer'] == true;
   bool get autoCalibrationEnabled => raw['autoCalibrationEnabled'] == true;
   bool get ignoringBatteryOptimizations =>
       raw['ignoringBatteryOptimizations'] == true;
@@ -41,6 +49,9 @@ class Diagnostics {
   double get gyroLevel => (raw['gyroLevel'] as num?)?.toDouble() ?? 0;
   double get threshold => (raw['threshold'] as num?)?.toDouble() ?? 0;
   bool get inConfirmedRun => raw['inConfirmedRun'] == true;
+
+  Activity get activity => Activity.fromId(raw['activity'] as String? ?? 'unknown');
+  double get altitudeRate => (raw['altitudeRate'] as num?)?.toDouble() ?? 0;
 }
 
 /// Dart's only route to the sensors.
@@ -76,18 +87,36 @@ class NativeBridge {
 
   Future<bool> get isRunning async => await _call<bool>('isRunning') ?? false;
 
-  /// Moves accumulated minute buckets out of service storage.
+  /// Moves accumulated step buckets out of service storage.
   ///
   /// Destructive on the native side, so the caller must commit the result to
   /// the database before doing anything else with it.
-  Future<Map<int, int>> drainBuckets() async {
+  ///
+  /// Keys arrive as `minuteEpoch:activityId`. A composite string key keeps the
+  /// native side to one flat JSON map while still carrying the activity, which
+  /// a nested structure in SharedPreferences would not do cheaply.
+  Future<List<StepBucket>> drainBuckets() async {
     final raw = await _call<Map<Object?, Object?>>('drainBuckets');
-    if (raw == null) return {};
-    final out = <int, int>{};
+    if (raw == null) return const [];
+
+    final out = <StepBucket>[];
     raw.forEach((k, v) {
-      final minute = int.tryParse(k.toString());
       final steps = (v as num?)?.toInt() ?? 0;
-      if (minute != null && steps > 0) out[minute] = steps;
+      if (steps <= 0) return;
+
+      final key = k.toString();
+      final sep = key.indexOf(':');
+      final minute = int.tryParse(sep < 0 ? key : key.substring(0, sep));
+      if (minute == null) return;
+
+      out.add(StepBucket(
+        minuteEpoch: minute,
+        // A key without a separator predates activity detection.
+        activity: sep < 0
+            ? Activity.unknown
+            : Activity.fromId(key.substring(sep + 1)),
+        steps: steps,
+      ));
     });
     return out;
   }
@@ -103,6 +132,7 @@ class NativeBridge {
         ourCount: (m['ourCount'] as num?)?.toInt() ?? 0,
         hardwareCount: (m['hardwareCount'] as num?)?.toInt() ?? 0,
         samples: m['samples'] as Uint8List? ?? Uint8List(0),
+        pressureSamples: m['pressureSamples'] as Uint8List?,
       );
     }).toList();
   }
@@ -112,6 +142,9 @@ class NativeBridge {
 
   Future<void> setParams(CalibrationParams params) =>
       _call<bool>('setParams', params.toJson());
+
+  Future<void> setActivityParams(ActivityParams params) =>
+      _call<bool>('setActivityParams', params.toJson());
 
   Future<void> setAutoCalibration(bool enabled) =>
       _call<bool>('setAutoCalibration', enabled);

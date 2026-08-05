@@ -195,6 +195,98 @@ class GaitFixtures {
     });
   }
 
+  /// Running, with the flight phase that distinguishes it from fast walking.
+  ///
+  /// During flight both feet are off the ground and the device approaches
+  /// freefall, so |a| dips far below gravity. Walking never does this, and it is
+  /// the signal the classifier keys on — cadence alone cannot separate a jog
+  /// from a brisk walk.
+  static List<SensorSample> run({
+    required int steps,
+    double stepFrequencyHz = 2.8,
+    double sampleRateHz = 50,
+    double leadInSeconds = 3.0,
+    int seed = 71,
+  }) {
+    final rnd = math.Random(seed);
+    final dt = 1 / sampleRateHz;
+    final duration = steps / stepFrequencyHz;
+    final n = ((leadInSeconds + duration + 2.0) * sampleRateHz).round();
+
+    final out = <SensorSample>[];
+    for (var i = 0; i < n; i++) {
+      final t = i * dt;
+      final running = t >= leadInSeconds && t < leadInSeconds + duration;
+      final tr = t - leadInSeconds;
+
+      var az = 9.81;
+      var gyro = 0.0;
+      if (running) {
+        final phase = 2 * math.pi * stepFrequencyHz * tr;
+        // Sharp impact peak plus a deep trough: the trough takes |a| close to
+        // zero, which is the flight phase.
+        az = 9.81 + 11.0 * math.sin(phase) + 3.0 * math.sin(2 * phase + 0.5);
+        if (az < 0.4) az = 0.4;
+        gyro = 2.2 * math.sin(phase + 0.3);
+      }
+
+      out.add(SensorSample(
+        tNs: (t * 1e9).round(),
+        ax: _n(rnd, 0.3),
+        ay: _n(rnd, 0.3),
+        az: az + _n(rnd, 0.3),
+        gx: gyro + _n(rnd, 0.05),
+        gy: _n(rnd, 0.05),
+        gz: _n(rnd, 0.05),
+        hasGyro: true,
+      ));
+    }
+    return out;
+  }
+
+  /// Barometer readings for a constant vertical speed.
+  ///
+  /// [verticalSpeed] is in m/s: positive climbs. Noise is set to 0.03 hPa,
+  /// which is representative of a real phone barometer and about 0.25 m — large
+  /// enough that a naive two-point slope would be useless.
+  static List<PressureSample> pressureRamp({
+    required double durationSeconds,
+    required double verticalSpeed,
+    double startHPa = 1013.25,
+    double sampleRateHz = 5,
+    double flatLeadInSeconds = 3.0,
+    double noiseHPa = 0.03,
+    int seed = 17,
+  }) {
+    final rnd = math.Random(seed);
+    final n = ((flatLeadInSeconds + durationSeconds) * sampleRateHz).round();
+    final out = <PressureSample>[];
+
+    for (var i = 0; i < n; i++) {
+      final t = i / sampleRateHz;
+      final climbing = t >= flatLeadInSeconds;
+      final metres = climbing ? (t - flatLeadInSeconds) * verticalSpeed : 0.0;
+      // ~0.12 hPa per metre near sea level.
+      final hPa = startHPa - metres * 0.1201 + _n(rnd, noiseHPa);
+      out.add(PressureSample(tNs: (t * 1e9).round(), hPa: hPa));
+    }
+    return out;
+  }
+
+  /// Barometer readings at a constant altitude, with realistic drift.
+  static List<PressureSample> pressureFlat({
+    required double durationSeconds,
+    double sampleRateHz = 5,
+    int seed = 23,
+  }) =>
+      pressureRamp(
+        durationSeconds: durationSeconds,
+        verticalSpeed: 0,
+        flatLeadInSeconds: 0,
+        sampleRateHz: sampleRateHz,
+        seed: seed,
+      );
+
   static double _n(math.Random r, double sigma) =>
       sigma == 0 ? 0 : (r.nextDouble() * 2 - 1) * sigma;
 }

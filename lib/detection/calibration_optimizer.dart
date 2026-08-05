@@ -2,8 +2,9 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'calibration_params.dart';
+import 'activity.dart';
+import 'motion_pipeline.dart';
 import 'sensor_sample.dart';
-import 'step_detector.dart';
 
 /// A recorded motion session with a known step count.
 ///
@@ -15,11 +16,16 @@ class LabelledSession {
   const LabelledSession({
     required this.samples,
     required this.actualSteps,
+    this.pressure = const [],
     this.id,
   });
 
   final List<SensorSample> samples;
   final int actualSteps;
+
+  /// Empty when the recording device had no barometer.
+  final List<PressureSample> pressure;
+
   final int? id;
 }
 
@@ -104,8 +110,9 @@ class CalibrationOptimizer {
 
   static CalibrationEvaluation evaluate(
     CalibrationParams params,
-    List<LabelledSession> sessions,
-  ) {
+    List<LabelledSession> sessions, {
+    ActivityParams activityParams = ActivityParams.factory,
+  }) {
     if (sessions.isEmpty) {
       return const CalibrationEvaluation(error: 0, detected: [], actual: []);
     }
@@ -113,7 +120,12 @@ class CalibrationOptimizer {
     final actual = <int>[];
     var sum = 0.0;
     for (final s in sessions) {
-      final d = StepDetector.countSteps(s.samples, params: params);
+      final d = MotionPipeline.replayTotal(
+        s.samples,
+        pressure: s.pressure,
+        params: params,
+        activityParams: activityParams,
+      );
       detected.add(d);
       actual.add(s.actualSteps);
       sum += sessionError(d, s.actualSteps);
@@ -262,11 +274,17 @@ class CalibrationJob {
     required this.packedSessions,
     required this.actualSteps,
     required this.startParamsJson,
+    this.packedPressure = const [],
     this.requireHoldout = false,
   });
 
   final List<Uint8List> packedSessions;
   final List<int> actualSteps;
+
+  /// Parallel to [packedSessions]; entries are null for sessions recorded on a
+  /// device without a barometer.
+  final List<Uint8List?> packedPressure;
+
   final String startParamsJson;
   final bool requireHoldout;
 }
@@ -280,9 +298,14 @@ Future<CalibrationOutcome> runCalibrationInIsolate(CalibrationJob job) {
   return Isolate.run(() {
     final sessions = <LabelledSession>[];
     for (var i = 0; i < job.packedSessions.length; i++) {
+      final packedPressure =
+          i < job.packedPressure.length ? job.packedPressure[i] : null;
       sessions.add(LabelledSession(
         samples: SensorSample.unpack(job.packedSessions[i]),
         actualSteps: job.actualSteps[i],
+        pressure: packedPressure == null
+            ? const []
+            : PressureSample.unpack(packedPressure),
       ));
     }
     return CalibrationOptimizer.optimize(

@@ -59,6 +59,7 @@ class SensorSample {
   }
 
   static List<SensorSample> unpack(Uint8List bytes, {bool hasGyro = true}) {
+    if (bytes.isEmpty) return const [];
     final f = Float32List.view(
       bytes.buffer,
       bytes.offsetInBytes,
@@ -78,5 +79,49 @@ class SensorSample {
         hasGyro: hasGyro,
       );
     });
+  }
+}
+
+/// One barometer reading.
+///
+/// Stored in a separate blob from [SensorSample] rather than as an eighth float
+/// on it. Barometers report a few times a second against the accelerometer's
+/// fifty, so interleaving them would waste most of the space — and, more
+/// importantly, a separate column lets sessions recorded before stairs existed
+/// stay readable instead of becoming ambiguous byte lengths.
+class PressureSample {
+  const PressureSample({required this.tNs, required this.hPa});
+
+  final int tNs;
+  final double hPa;
+
+  static const int floatsPerSample = 2;
+
+  static Uint8List pack(List<PressureSample> samples) {
+    final out = Float32List(samples.length * floatsPerSample);
+    if (samples.isEmpty) return out.buffer.asUint8List();
+    final t0 = samples.first.tNs;
+    for (var i = 0; i < samples.length; i++) {
+      out[i * floatsPerSample] = (samples[i].tNs - t0) / 1e6;
+      out[i * floatsPerSample + 1] = samples[i].hPa;
+    }
+    return out.buffer.asUint8List();
+  }
+
+  static List<PressureSample> unpack(Uint8List bytes) {
+    if (bytes.isEmpty) return const [];
+    final f = Float32List.view(
+      bytes.buffer,
+      bytes.offsetInBytes,
+      bytes.lengthInBytes ~/ Float32List.bytesPerElement,
+    );
+    final n = f.length ~/ floatsPerSample;
+    return List<PressureSample>.generate(
+      n,
+      (i) => PressureSample(
+        tNs: (f[i * floatsPerSample] * 1e6).round(),
+        hPa: f[i * floatsPerSample + 1],
+      ),
+    );
   }
 }

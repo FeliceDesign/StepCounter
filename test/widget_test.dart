@@ -6,9 +6,11 @@ import 'package:stepcounter/app_scope.dart';
 import 'package:stepcounter/data/database.dart';
 import 'package:stepcounter/data/settings.dart';
 import 'package:stepcounter/data/step_repository.dart';
+import 'package:stepcounter/detection/activity.dart';
 import 'package:stepcounter/detection/calibration_params.dart';
 import 'package:stepcounter/detection/sensor_sample.dart';
 import 'package:stepcounter/ui/home_screen.dart';
+import 'package:stepcounter/ui/activity_palette.dart';
 import 'package:stepcounter/ui/reset_sheet.dart';
 
 import 'fake_bridge.dart';
@@ -71,7 +73,7 @@ void main() {
     });
 
     testWidgets('shows the count with thousands separators', (tester) async {
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 4321};
+      bridge.queueSteps(minuteOf(DateTime.now()), 4321);
       await repo.initialise();
 
       await tester.pumpWidget(wrap(const HomeScreen()));
@@ -84,7 +86,7 @@ void main() {
 
     testWidgets('reports remaining steps against the goal', (tester) async {
       await settings.setDailyGoal(5000);
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 1000};
+      bridge.queueSteps(minuteOf(DateTime.now()), 1000);
       await repo.initialise();
 
       await tester.pumpWidget(wrap(const HomeScreen()));
@@ -98,7 +100,7 @@ void main() {
     testWidgets('announces a reached goal instead of a negative remainder',
         (tester) async {
       await settings.setDailyGoal(1000);
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 2500};
+      bridge.queueSteps(minuteOf(DateTime.now()), 2500);
       await repo.initialise();
 
       await tester.pumpWidget(wrap(const HomeScreen()));
@@ -107,6 +109,77 @@ void main() {
       expect(find.text('Daily goal reached'), findsOneWidget);
 
       await unmount(tester);
+    });
+  });
+
+  group('activity colouring', () {
+    testWidgets('the legend appears once there is more than one activity',
+        (tester) async {
+      final m = minuteOf(DateTime.now());
+      bridge.queueSteps(m, 900, Activity.walking);
+      bridge.queueSteps(m, 300, Activity.running);
+      bridge.queueSteps(m, 60, Activity.stairsUp);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Walking'), findsOneWidget);
+      expect(find.text('Running'), findsOneWidget);
+      expect(find.text('Stairs'), findsOneWidget);
+      // The total still reads as the sum of every activity.
+      expect(find.text('1,260'), findsOneWidget);
+
+      await unmount(tester);
+    });
+
+    testWidgets('a plain walking day shows no legend at all', (tester) async {
+      bridge.queueSteps(minuteOf(DateTime.now()), 500, Activity.walking);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      // One category is not a breakdown, so a key would be pure clutter.
+      expect(find.text('Walking'), findsNothing);
+
+      await unmount(tester);
+    });
+
+    testWidgets('stairs up and down share one legend entry', (tester) async {
+      final m = minuteOf(DateTime.now());
+      bridge.queueSteps(m, 400, Activity.walking);
+      bridge.queueSteps(m, 40, Activity.stairsUp);
+      bridge.queueSteps(m, 35, Activity.stairsDown);
+      await repo.initialise();
+
+      await tester.pumpWidget(wrap(const HomeScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Stairs'), findsOneWidget);
+      expect(find.text('Stairs up'), findsNothing);
+
+      await unmount(tester);
+    });
+
+    testWidgets('every activity has a distinct colour in both themes',
+        (tester) async {
+      for (final brightness in [Brightness.light, Brightness.dark]) {
+        late BuildContext ctx;
+        await tester.pumpWidget(MaterialApp(
+          theme: ThemeData(brightness: brightness),
+          home: Builder(builder: (context) {
+            ctx = context;
+            return const SizedBox();
+          }),
+        ));
+        final colours = {
+          for (final a in ActivityPalette.stackOrder)
+            ActivityPalette.of(ctx, a)
+        };
+        expect(colours.length, ActivityPalette.stackOrder.length,
+            reason: 'colours collide in \$brightness');
+      }
     });
   });
 
@@ -159,7 +232,7 @@ void main() {
 
     testWidgets('resetting learned settings leaves step history alone',
         (tester) async {
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 900};
+      bridge.queueSteps(minuteOf(DateTime.now()), 900);
       await repo.initialise();
       await repo.adoptParams(
         const CalibrationParams(thresholdSigma: 1.7),
@@ -178,7 +251,7 @@ void main() {
 
     testWidgets('deleting step history demands a second confirmation',
         (tester) async {
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 900};
+      bridge.queueSteps(minuteOf(DateTime.now()), 900);
       await repo.initialise();
 
       await openSheet(tester);
@@ -197,7 +270,7 @@ void main() {
 
     testWidgets('confirming the second prompt does delete the history',
         (tester) async {
-      bridge.pendingBuckets = {minuteOf(DateTime.now()): 900};
+      bridge.queueSteps(minuteOf(DateTime.now()), 900);
       await repo.initialise();
 
       await openSheet(tester);

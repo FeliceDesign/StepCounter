@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 
 import '../app_scope.dart';
 import '../data/database.dart';
+import '../detection/activity.dart';
+import 'activity_palette.dart';
 import 'step_chart.dart';
 
 enum HistoryRange {
@@ -63,6 +65,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _loading = false;
     });
   }
+
+  /// Activities with any steps in the visible range.
+  Set<Activity> get _present => {
+        for (final d in _days)
+          for (final e in d.byActivity.entries)
+            if (e.value > 0) e.key,
+      };
 
   /// True once the visible window has scrolled past the earliest data.
   bool get _atEarliest {
@@ -144,9 +153,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     ),
                   ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+            child: ActivityLegend(present: _present),
+          ),
           const Divider(height: 1),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -156,6 +169,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ],
             ),
           ),
+          if (_present.length > 1)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: _ActivityBreakdown(days: _days),
+            ),
         ],
       ),
     );
@@ -165,6 +183,63 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final last = DayMath.addDays(_end, -1);
     final fmt = _range == HistoryRange.year ? DateFormat.yMMM() : DateFormat.MMMd();
     return '${fmt.format(_start)} — ${fmt.format(last)}';
+  }
+}
+
+/// Steps split by how they were earned, over the visible range.
+class _ActivityBreakdown extends StatelessWidget {
+  const _ActivityBreakdown({required this.days});
+
+  final List<DayTotal> days;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Stairs up and down are summed here: the direction matters to the
+    // classifier, not to someone reading a total.
+    final totals = <Activity, int>{};
+    for (final d in days) {
+      for (final e in d.byActivity.entries) {
+        final key = e.key == Activity.stairsDown ? Activity.stairsUp : e.key;
+        totals[key] = (totals[key] ?? 0) + e.value;
+      }
+    }
+    final grand = totals.values.fold<int>(0, (a, b) => a + b);
+    if (grand == 0) return const SizedBox.shrink();
+
+    return Column(
+      children: [
+        for (final a in ActivityPalette.legendOrder)
+          if ((totals[a] ?? 0) > 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: ActivityPalette.of(context, a),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(ActivityPalette.legendLabel(a),
+                        style: theme.textTheme.bodySmall),
+                  ),
+                  Text(
+                    '${NumberFormat.decimalPattern().format(totals[a])}'
+                    '  ·  ${(totals[a]! / grand * 100).round()}%',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+      ],
+    );
   }
 }
 

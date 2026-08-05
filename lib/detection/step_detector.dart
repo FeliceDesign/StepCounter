@@ -91,6 +91,18 @@ class StepDetector {
 
   int get totalSteps => _totalSteps;
 
+  double _lastRawMagnitude = 0;
+  double _lastFilteredMagnitude = 0;
+
+  /// Acceleration magnitude including gravity, from the most recent sample.
+  /// The activity classifier reads this rather than recomputing it — and needs
+  /// the raw value, since the flight phase of running is a dip toward freefall
+  /// that the band-pass removes.
+  double get lastRawMagnitude => _lastRawMagnitude;
+
+  /// Band-passed magnitude from the most recent sample.
+  double get lastFilteredMagnitude => _lastFilteredMagnitude;
+
   void _buildFilters() {
     _accelBand = BandPass(lowHz: _bandLowHz, highHz: _bandHighHz, sampleRateHz: sampleRateHz);
     final window = (sampleRateHz * _statsWindowSeconds).round();
@@ -133,7 +145,10 @@ class StepDetector {
     _lastSampleNs = s.tNs;
 
     // 1-2. Magnitude, then band-pass to strip gravity and high-frequency noise.
-    final filtered = _accelBand.process(s.accelMagnitude);
+    final raw = s.accelMagnitude;
+    final filtered = _accelBand.process(raw);
+    _lastRawMagnitude = raw;
+    _lastFilteredMagnitude = filtered;
 
     // Gyroscope is tracked as a raw magnitude level, NOT band-passed. Rotation
     // about one axis makes |omega| a rectified sine at twice the gait
