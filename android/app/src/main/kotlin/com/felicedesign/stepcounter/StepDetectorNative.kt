@@ -139,19 +139,20 @@ class StepDetectorNative(
     }
 
     private fun evaluatePeak(peakValue: Double, peakNs: Long, hasGyro: Boolean): List<Long> {
+        // Absolute motion floor. The adaptive threshold below scales with the
+        // signal, so on a near-still phone it collapses toward zero and fires on
+        // desk vibration; no setting of thresholdSigma can prevent that, because
+        // it shrinks along with the noise it is meant to reject.
+        if (stats.stdDev() < params.minMotionSigma) {
+            breakStreak()
+            return emptyList()
+        }
+
         val threshold = stats.mean() + params.thresholdSigma * stats.stdDev()
         if (peakValue <= threshold) return emptyList()
 
         val valley = lastValleyValue ?: return emptyList()
         if (peakValue - valley < params.minAmplitude) return emptyList()
-
-        if (hasGyro && gyroStats.count >= warmupSamples) {
-            val gs = gyroStats.mean()
-            if (gs < params.gyroMinLevel || gs > params.gyroMaxLevel) {
-                breakStreak()
-                return emptyList()
-            }
-        }
 
         val last = lastCandidateNs ?: return acceptCandidate(peakNs, null)
 

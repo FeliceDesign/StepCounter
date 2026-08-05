@@ -203,7 +203,7 @@ void main() {
       for (var i = 0; i < 3; i++) {
         await repo.saveManualSession(
           samples: SensorSample.pack(
-              GaitFixtures.walk(steps: 20, amplitude: 0.24, seed: i)),
+              GaitFixtures.walk(steps: 20, amplitude: 0.9, gyroAmplitude: 0.3, seed: i)),
           actualSteps: 20,
           durationMs: 15000,
         );
@@ -223,11 +223,18 @@ void main() {
       for (var i = 0; i < 9; i++) {
         await repo.saveManualSession(
           samples: SensorSample.pack(
-              GaitFixtures.walk(steps: 20, amplitude: 0.24, seed: 100 + i)),
+              GaitFixtures.walk(steps: 20, amplitude: 0.9, gyroAmplitude: 0.3, seed: 100 + i)),
           actualSteps: 20,
           durationMs: 15000,
         );
       }
+
+      // Start from thresholds far too strict for this corpus, so there is a
+      // genuine improvement available for the optimiser to find.
+      await repo.adoptParams(
+        const CalibrationParams(minAmplitude: 3.2, minMotionSigma: 1.2),
+        source: 'manual',
+      );
 
       final outcome = await repo.runAutomaticCalibration();
 

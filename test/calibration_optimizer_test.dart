@@ -6,10 +6,17 @@ import 'package:stepcounter/detection/step_detector.dart';
 
 import 'fixtures/gait_fixtures.dart';
 
-/// A corpus of walks whose signal is too weak for the factory thresholds, as
-/// happens with a light-footed walker or a phone in a loose coat pocket. The
-/// factory detector misses most of these; a correctly working optimiser should
-/// notice and relax the amplitude threshold.
+/// Parameters far stricter than anyone should ship, used as a starting point so
+/// the optimiser has a real improvement to find.
+///
+/// The corpus below is genuine walking, so the factory settings already handle
+/// it; without a deliberately bad baseline there would be nothing to recover
+/// and the guardrails would correctly refuse to change anything.
+const overStrict = CalibrationParams(minAmplitude: 3.2, minMotionSigma: 1.2);
+
+/// Real but quiet walking: a light-footed walker, or a phone in a loose coat
+/// pocket. Weak enough that over-strict thresholds miss it, strong enough that
+/// counting it is unambiguously correct.
 List<LabelledSession> weakGaitCorpus({int count = 9, int steps = 20}) {
   return List.generate(count, (i) {
     return LabelledSession(
@@ -17,8 +24,8 @@ List<LabelledSession> weakGaitCorpus({int count = 9, int steps = 20}) {
       actualSteps: steps,
       samples: GaitFixtures.walk(
         steps: steps,
-        amplitude: 0.24,
-        gyroAmplitude: 0.25,
+        amplitude: 0.9,
+        gyroAmplitude: 0.3,
         stepFrequencyHz: 1.6 + (i % 3) * 0.15,
         seed: 100 + i,
       ),
@@ -96,14 +103,12 @@ void main() {
     test('recovers steps the factory parameters miss', () {
       final corpus = weakGaitCorpus();
 
-      final before = CalibrationOptimizer.evaluate(
-        CalibrationParams.factory,
-        corpus,
-      );
+      final before = CalibrationOptimizer.evaluate(overStrict, corpus);
       expect(before.totalDetected, lessThan(before.totalActual ~/ 2),
           reason: 'fixture should genuinely defeat the factory parameters');
 
-      final outcome = CalibrationOptimizer.optimize(sessions: corpus);
+      final outcome =
+          CalibrationOptimizer.optimize(sessions: corpus, start: overStrict);
 
       expect(outcome.accepted, isTrue);
       expect(outcome.validated, isTrue);
@@ -122,7 +127,8 @@ void main() {
     });
 
     test('never returns parameters outside the legal bounds', () {
-      final outcome = CalibrationOptimizer.optimize(sessions: weakGaitCorpus());
+      final outcome = CalibrationOptimizer.optimize(
+          sessions: weakGaitCorpus(), start: overStrict);
       final p = outcome.params;
       for (final key in CalibrationParams.tunableKeys) {
         final (lo, hi) = CalibrationParams.bounds[key]!;
@@ -134,8 +140,8 @@ void main() {
 
     test('is deterministic', () {
       final corpus = weakGaitCorpus();
-      final a = CalibrationOptimizer.optimize(sessions: corpus);
-      final b = CalibrationOptimizer.optimize(sessions: corpus);
+      final a = CalibrationOptimizer.optimize(sessions: corpus, start: overStrict);
+      final b = CalibrationOptimizer.optimize(sessions: corpus, start: overStrict);
       expect(a.params, b.params);
       expect(a.holdoutError, b.holdoutError);
       expect(a.accepted, b.accepted);
@@ -147,9 +153,30 @@ void main() {
       expect(outcome.params, CalibrationParams.factory);
     });
 
+    test('escapes a corner where two parameters are jointly wrong', () {
+      // Coordinate descent moves one parameter at a time. With both the motion
+      // floor and the amplitude floor set too high, relaxing either alone still
+      // detects nothing, so no single move improves the score and a naive
+      // search would sit there forever. The restart from factory defaults is
+      // what makes this recoverable.
+      const stuck = CalibrationParams(minAmplitude: 3.8, minMotionSigma: 1.4);
+      final corpus = weakGaitCorpus();
+
+      expect(CalibrationOptimizer.evaluate(stuck, corpus).totalDetected, 0,
+          reason: 'no single relaxation helps from here');
+
+      final outcome =
+          CalibrationOptimizer.optimize(sessions: corpus, start: stuck);
+
+      expect(outcome.accepted, isTrue);
+      expect(CalibrationOptimizer.evaluate(outcome.params, corpus).totalDetected,
+          greaterThan(0));
+    });
+
     test('marks a single-session run as unvalidated', () {
       final outcome = CalibrationOptimizer.optimize(
         sessions: weakGaitCorpus(count: 1),
+        start: overStrict,
       );
       expect(outcome.validated, isFalse,
           reason: 'one session cannot be held out from itself');
@@ -161,6 +188,7 @@ void main() {
     test('refuses to adopt from too few windows', () {
       final outcome = CalibrationOptimizer.optimize(
         sessions: weakGaitCorpus(count: 4),
+        start: overStrict,
         requireHoldout: true,
       );
       expect(outcome.sessionCount, lessThan(CalibrationOptimizer.minSessionsForAutoAdopt));
@@ -170,6 +198,7 @@ void main() {
     test('adopts once there are enough windows and a real improvement', () {
       final outcome = CalibrationOptimizer.optimize(
         sessions: weakGaitCorpus(count: 9),
+        start: overStrict,
         requireHoldout: true,
       );
       expect(outcome.accepted, isTrue);
@@ -179,6 +208,7 @@ void main() {
     test('an unvalidated run is never auto-adopted', () {
       final outcome = CalibrationOptimizer.optimize(
         sessions: weakGaitCorpus(count: 2),
+        start: overStrict,
         requireHoldout: true,
       );
       expect(outcome.accepted, isFalse);
@@ -186,7 +216,7 @@ void main() {
 
     test('improvement is measured against the previous params, not the factory',
         () {
-      const previous = CalibrationParams(minAmplitude: 2.5);
+      const previous = CalibrationParams(minAmplitude: 3.0, minMotionSigma: 1.1);
       final outcome = CalibrationOptimizer.optimize(
         sessions: weakGaitCorpus(),
         start: previous,

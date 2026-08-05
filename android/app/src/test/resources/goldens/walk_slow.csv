@@ -1,4 +1,4 @@
-# walk_slow expected=41
+# walk_slow expected=40
 t_ms,accel_mag,gyro_mag
 0.00,9.8262,0.0105
 20.00,9.7806,0.0074

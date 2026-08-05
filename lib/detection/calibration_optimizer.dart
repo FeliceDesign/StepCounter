@@ -186,20 +186,43 @@ class CalibrationOptimizer {
     final (train, holdout) = split(sessions);
     final validated = holdout.isNotEmpty;
 
+    // Descent is run from the current parameters and again from the factory
+    // ones, keeping whichever ends up better.
+    //
+    // Coordinate descent moves one parameter at a time, so it cannot escape a
+    // corner where two parameters are jointly wrong: if the motion floor and
+    // the amplitude floor are both too strict, relaxing either alone still
+    // detects nothing, no single move improves the score, and the search sits
+    // there forever. Restarting from a known-sane point costs one extra pass
+    // and makes a badly calibrated device recoverable.
     var best = start.clamped();
     var bestError = evaluate(best, train).error;
 
-    for (var round = 0; round < rounds; round++) {
-      for (final key in CalibrationParams.tunableKeys) {
-        for (final v in _candidates(key, best[key], round, candidatesPerRound)) {
-          final trial = best.withField(key, v);
-          if (trial == best) continue;
-          final e = evaluate(trial, train).error;
-          if (e < bestError) {
-            bestError = e;
-            best = trial;
+    for (final seed in <CalibrationParams>{
+      start.clamped(),
+      CalibrationParams.factory,
+    }) {
+      var current = seed;
+      var currentError = evaluate(current, train).error;
+
+      for (var round = 0; round < rounds; round++) {
+        for (final key in CalibrationParams.tunableKeys) {
+          for (final v
+              in _candidates(key, current[key], round, candidatesPerRound)) {
+            final trial = current.withField(key, v);
+            if (trial == current) continue;
+            final e = evaluate(trial, train).error;
+            if (e < currentError) {
+              currentError = e;
+              current = trial;
+            }
           }
         }
+      }
+
+      if (currentError < bestError) {
+        bestError = currentError;
+        best = current;
       }
     }
 

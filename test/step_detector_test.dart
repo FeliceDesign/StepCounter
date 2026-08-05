@@ -65,6 +65,65 @@ void main() {
     test('shaking is rejected by the gyro upper bound', () {
       expect(StepDetector.countSteps(GaitFixtures.shaking()), 0);
     });
+
+    // Regression: reported as "even the smallest movements are counted". The
+    // adaptive threshold is derived from the signal's own deviation, so on a
+    // near-still phone it collapses toward zero and fires on desk vibration.
+    // Ten minutes of this used to produce dozens of steps; over a day it added
+    // roughly 1,600.
+    test('sustained small movement counts nothing', () {
+      for (final amp in [0.2, 0.35, 0.5]) {
+        expect(
+          StepDetector.countSteps(
+            GaitFixtures.lowAmplitudeMotion(amplitude: amp),
+          ),
+          0,
+          reason: 'amplitude \$amp should be below the motion floor',
+        );
+      }
+    });
+
+    test('the motion floor is what rejects it, not the adaptive threshold', () {
+      final samples = GaitFixtures.lowAmplitudeMotion(amplitude: 0.5);
+
+      // The adaptive threshold is derived from the signal's own deviation, so
+      // it shrinks along with the noise. At the setting a user would plausibly
+      // choose it does nothing useful here.
+      expect(
+        StepDetector.countSteps(
+          samples,
+          params: const CalibrationParams(
+            thresholdSigma: 0.7,
+            minMotionSigma: 0.05,
+            minAmplitude: 0.6,
+          ),
+        ),
+        greaterThan(0),
+      );
+
+      // The absolute floor rejects it outright, at any threshold setting.
+      expect(
+        StepDetector.countSteps(
+          samples,
+          params: const CalibrationParams(
+            thresholdSigma: 0.7,
+            minMotionSigma: 0.35,
+          ),
+        ),
+        0,
+      );
+    });
+
+    test('the floor does not touch genuinely damped walking', () {
+      // A phone loose in a bag is the weakest real signal the detector has to
+      // handle, and sits just above the floor.
+      expect(
+        StepDetector.countSteps(
+          GaitFixtures.walk(steps: 80, amplitude: 0.9, gyroAmplitude: 0.3),
+        ),
+        closeTo(80, 5),
+      );
+    });
   });
 
   group('detector mechanics', () {

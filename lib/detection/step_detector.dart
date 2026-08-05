@@ -198,6 +198,19 @@ class StepDetector {
 
   /// 5-8. Everything a local maximum has to survive to become a step.
   List<int> _evaluatePeak(double peakValue, int peakNs, bool hasGyro) {
+    // Absolute motion floor, checked before anything relative.
+    //
+    // The adaptive threshold below scales with the signal, so on a nearly still
+    // phone it collapses toward zero and happily fires on desk vibration or
+    // shifting in a chair. Without this gate the detector produced on the order
+    // of 1,600 phantom steps a day, and no setting of thresholdSigma could stop
+    // it, because that parameter shrinks along with the noise it is meant to
+    // reject.
+    if (_stats.stdDev < _params.minMotionSigma) {
+      _breakStreak();
+      return const [];
+    }
+
     final threshold = _stats.mean + _params.thresholdSigma * _stats.stdDev;
     if (peakValue <= threshold) return const [];
 

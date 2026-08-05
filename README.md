@@ -27,16 +27,25 @@ accel magnitude → band-pass 0.5–3 Hz → smooth → adaptive threshold
 2. **Band-pass 0.5–3 Hz** (2nd-order Butterworth). Human gait lives in this
    band; this strips the gravity DC term and high-frequency handling noise in
    one stage.
-3. **Adaptive threshold** `T = mean + k·σ` over a 2.5 s window, so the same
-   parameters cover a slow shuffle and a jog.
-4. **Peak/valley pairing** with a minimum valley-to-peak amplitude.
-5. **Temporal gate** rejects intervals under 250 ms — faster than that is a
+3. **Absolute motion floor.** The band-passed signal's standard deviation must
+   exceed `minMotionSigma` before anything is counted. This has to come first,
+   because the adaptive threshold below is derived from the signal's own
+   deviation and therefore *shrinks along with the noise it is meant to
+   reject* — on a near-still phone it collapses toward zero and fires on desk
+   vibration. Measured over the detector's window: a still or lightly disturbed
+   phone sits at 0.13–0.33, ordinary walking at 1.28, jogging at 1.89.
+4. **Adaptive threshold** `T = mean + k·σ` over a 2.5 s window, so the same
+   parameters cover a slow shuffle and a jog. Note what it cannot do: raising
+   `k` does not reject small movement, because `k` multiplies a deviation that
+   is itself small. That is `minMotionSigma`'s job.
+5. **Peak/valley pairing** with a minimum valley-to-peak amplitude.
+6. **Temporal gate** rejects intervals under 250 ms — faster than that is a
    bounce within one footfall, not a second step.
-6. **Regularity gate** requires four consecutive rhythmic candidates before
+7. **Regularity gate** requires four consecutive rhythmic candidates before
    counting any of them. This is the primary false-positive defence: gesturing
    or pulling the phone out of a pocket produces one or two peaks, never four
    evenly spaced ones. A continuous walk pays this warm-up only once.
-7. **Gyroscope gate** rejects motion with no rotation — road vibration in a
+8. **Gyroscope gate** rejects motion with no rotation — road vibration in a
    vehicle produces gait-like acceleration peaks with almost no rotational
    energy, and it is the largest source of phantom steps in naive pedometers.
 
@@ -45,6 +54,23 @@ Rotation about one axis makes `|ω|` a rectified sine at twice the gait
 frequency, so band-passing it attenuates it more the faster you walk — which
 rejected jogging while accepting a stroll. Mean raw level separates the cases
 cleanly: ~0.004 rad/s in a vehicle, ~0.2–0.5 walking, ~10 shaking the phone.
+
+### What it cannot do
+
+Sustained motion that is rhythmic *at gait frequency and gait amplitude* is not
+separable from walking by these means. Measured over the detector's window,
+sustained non-gait motion reaches a deviation of 0.52 while genuinely damped
+walking — a phone loose in a bag — sits at 0.57. They overlap, and no constant
+threshold divides them.
+
+An autocorrelation-based periodicity gate was tried and removed: it did suppress
+irregular motion, but it also cost a quarter of every run, and its effect turned
+out to come from instability in the cadence estimate rather than from measuring
+periodicity as intended. A gate whose mechanism is not the one claimed is worse
+than no gate.
+
+The tool that does address this case is per-user calibration against the
+hardware pedometer, which supplies a real error signal instead of a guess.
 
 ## Activity detection
 
@@ -101,6 +127,11 @@ error, with the same holdout validation.
 
 Guardrails on both paths:
 
+- the search runs from the current parameters *and* from the factory ones,
+  keeping whichever wins. Coordinate descent moves one parameter at a time and
+  cannot escape a corner where two are jointly wrong — with both the motion and
+  amplitude floors too strict, relaxing either alone still detects nothing, so
+  no single move improves and the search would sit there forever;
 - new parameters must beat the **old** parameters on sessions the search never
   saw (every third session is held back, index-based so recalibrating twice
   gives the same answer);

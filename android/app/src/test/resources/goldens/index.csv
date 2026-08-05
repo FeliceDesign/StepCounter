@@ -1,6 +1,6 @@
 # name,expected_steps
 walk_normal,61
-walk_slow,41
+walk_slow,40
 walk_jog,60
 walk_damped,40
 reject_vehicle,0

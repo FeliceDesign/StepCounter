@@ -150,7 +150,8 @@ class RollingStats(private val size: Int) {
 /** Mirrors lib/detection/calibration_params.dart. */
 data class CalibrationParams(
     val thresholdSigma: Double = 0.6,
-    val minAmplitude: Double = 0.6,
+    val minMotionSigma: Double = 0.35,
+    val minAmplitude: Double = 1.0,
     val minStepIntervalMs: Int = 250,
     val maxStepIntervalMs: Int = 2000,
     val regularityRunLength: Int = 4,
@@ -159,7 +160,8 @@ data class CalibrationParams(
 ) {
     fun clamped() = CalibrationParams(
         thresholdSigma = thresholdSigma.coerceIn(0.2, 2.0),
-        minAmplitude = minAmplitude.coerceIn(0.1, 3.0),
+        minMotionSigma = minMotionSigma.coerceIn(0.05, 1.5),
+        minAmplitude = minAmplitude.coerceIn(0.1, 4.0),
         minStepIntervalMs = minStepIntervalMs.coerceIn(180, 400),
         maxStepIntervalMs = maxStepIntervalMs.coerceIn(1000, 2500),
         regularityRunLength = regularityRunLength.coerceIn(2, 8),
@@ -169,6 +171,7 @@ data class CalibrationParams(
 
     fun toMap(): Map<String, Any> = mapOf(
         "thresholdSigma" to thresholdSigma,
+        "minMotionSigma" to minMotionSigma,
         "minAmplitude" to minAmplitude,
         "minStepIntervalMs" to minStepIntervalMs,
         "maxStepIntervalMs" to maxStepIntervalMs,
@@ -182,6 +185,7 @@ data class CalibrationParams(
 
         fun fromMap(m: Map<*, *>): CalibrationParams = CalibrationParams(
             thresholdSigma = num(m["thresholdSigma"], FACTORY.thresholdSigma),
+            minMotionSigma = num(m["minMotionSigma"], FACTORY.minMotionSigma),
             minAmplitude = num(m["minAmplitude"], FACTORY.minAmplitude),
             minStepIntervalMs = num(m["minStepIntervalMs"], FACTORY.minStepIntervalMs.toDouble()).toInt(),
             maxStepIntervalMs = num(m["maxStepIntervalMs"], FACTORY.maxStepIntervalMs.toDouble()).toInt(),

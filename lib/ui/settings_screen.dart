@@ -231,6 +231,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 /// Manual override for people who would rather nudge the counter than run a
 /// calibration walk. Writes a version like any other calibration, so it shows
 /// up in history and is undone by the same reset.
+///
+/// Drives minMotionSigma, not thresholdSigma. The old slider adjusted the
+/// adaptive threshold, which is derived from the signal's own deviation and so
+/// shrinks along with whatever noise it is meant to reject — moving it from 0.7
+/// to its maximum only cut phantom steps from 144 to 32. This one is an
+/// absolute floor on how much movement must be present at all, which is what
+/// actually silences a phone sitting on a desk.
 class _SensitivityTile extends StatelessWidget {
   const _SensitivityTile({required this.onChanged});
 
@@ -239,15 +246,22 @@ class _SensitivityTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repo = AppScope.of(context).repository;
-    final (lo, hi) = CalibrationParams.bounds['thresholdSigma']!;
-    final value = repo.params.thresholdSigma.clamp(lo, hi);
+    final (lo, hi) = CalibrationParams.bounds['minMotionSigma']!;
+    final value = repo.params.minMotionSigma.clamp(lo, hi);
 
     return ListTile(
-      title: const Text('Sensitivity'),
+      title: const Text('Strictness'),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Lower counts more movement as steps.'),
+          Text(
+            value >= 0.7
+                ? 'Very strict — only vigorous movement counts. May miss steps '
+                    'if you carry your phone loosely.'
+                : value >= 0.3
+                    ? 'Balanced. Ignores desk vibration and small fidgeting.'
+                    : 'Lenient — small movements may be counted as steps.',
+          ),
           Slider(
             value: value,
             min: lo,
@@ -257,7 +271,7 @@ class _SensitivityTile extends StatelessWidget {
             onChanged: (v) {},
             onChangeEnd: (v) async {
               await repo.adoptParams(
-                repo.params.copyWith(thresholdSigma: v),
+                repo.params.copyWith(minMotionSigma: v),
                 source: 'manual-slider',
               );
               onChanged();

@@ -287,6 +287,44 @@ class GaitFixtures {
         seed: seed,
       );
 
+  /// Sustained low-amplitude motion: a phone on a desk being typed beside, or
+  /// shifting in a chair. Rhythmic enough to reach the detector's peak logic,
+  /// far too weak to be walking.
+  ///
+  /// Phase is integrated rather than written as 2*pi*f(t)*t, which would make
+  /// the instantaneous frequency grow without bound and produce a signal the
+  /// band-pass simply removes — a fixture that tests nothing.
+  static List<SensorSample> lowAmplitudeMotion({
+    double durationSeconds = 600,
+    double amplitude = 0.35,
+    double baseHz = 1.5,
+    double sampleRateHz = 50,
+    int seed = 5,
+  }) {
+    final rnd = math.Random(seed);
+    final n = (durationSeconds * sampleRateHz).round();
+    final dt = 1 / sampleRateHz;
+    final out = <SensorSample>[];
+    var phase = 0.0;
+
+    for (var i = 0; i < n; i++) {
+      final t = i * dt;
+      phase += 2 * math.pi * (baseHz + 0.3 * math.sin(2 * math.pi * 0.05 * t)) * dt;
+      out.add(SensorSample(
+        tNs: (t * 1e9).round(),
+        ax: 0.05 * math.sin(phase * 0.7) + _n(rnd, 0.03),
+        ay: _n(rnd, 0.03),
+        az: 9.81 + amplitude * math.sin(phase) + _n(rnd, 0.05),
+        // Enough rotation that the gyro gate cannot be what saves us.
+        gx: 0.10 * math.sin(phase + 0.3),
+        gy: _n(rnd, 0.01),
+        gz: _n(rnd, 0.01),
+        hasGyro: true,
+      ));
+    }
+    return out;
+  }
+
   static double _n(math.Random r, double sigma) =>
       sigma == 0 ? 0 : (r.nextDouble() * 2 - 1) * sigma;
 }

@@ -520,7 +520,8 @@ class _ParamDiff extends StatelessWidget {
       v == v.roundToDouble() ? v.round().toString() : v.toStringAsFixed(2);
 
   static String _label(String key) => switch (key) {
-        'thresholdSigma' => 'Sensitivity',
+        'thresholdSigma' => 'Adaptive threshold',
+        'minMotionSigma' => 'Minimum movement',
         'minAmplitude' => 'Minimum step strength',
         'minStepIntervalMs' => 'Fastest step (ms)',
         'maxStepIntervalMs' => 'Slowest step (ms)',
