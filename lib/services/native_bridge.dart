@@ -27,6 +27,17 @@ class AutoWindow {
   final Uint8List? pressureSamples;
 }
 
+/// A finished manual recording: motion, plus barometer readings when the
+/// device has one.
+class Recording {
+  const Recording({required this.samples, this.pressureSamples});
+
+  final Uint8List samples;
+  final Uint8List? pressureSamples;
+
+  bool get isEmpty => samples.isEmpty;
+}
+
 /// Everything Settings shows about the health of the counting pipeline.
 class Diagnostics {
   const Diagnostics(this.raw);
@@ -151,8 +162,16 @@ class NativeBridge {
 
   Future<void> startRecording() => _call<bool>('startRecording');
 
-  Future<Uint8List> stopRecording() async =>
-      await _call<Uint8List>('stopRecording') ?? Uint8List(0);
+  Future<Recording> stopRecording() async {
+    final raw = await _call<Map<Object?, Object?>>('stopRecording');
+    if (raw == null) return Recording(samples: Uint8List(0));
+    final pressure = raw['pressureSamples'] as Uint8List?;
+    return Recording(
+      samples: raw['samples'] as Uint8List? ?? Uint8List(0),
+      pressureSamples:
+          (pressure == null || pressure.isEmpty) ? null : pressure,
+    );
+  }
 
   /// Tells the service today's authoritative total so its notification is
   /// right even though it counted only part of the day itself.

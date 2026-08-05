@@ -48,6 +48,17 @@ class StepDetectorNative(
     var totalSteps: Int = 0
         private set
 
+    /**
+     * Magnitudes from the most recent sample, read by the activity classifier
+     * rather than recomputed. It needs the raw value specifically: the flight
+     * phase of running is a dip toward freefall that the band-pass removes.
+     */
+    var lastRawMagnitude: Double = 0.0
+        private set
+
+    var lastFilteredMagnitude: Double = 0.0
+        private set
+
     private val warmupSamples: Int get() = (sampleRateHz * WARMUP_SECONDS).toInt()
 
     fun reset() {
@@ -85,7 +96,10 @@ class StepDetectorNative(
         }
         lastSampleNs = tNs
 
-        val filtered = accelBand.process(sqrt(ax * ax + ay * ay + az * az))
+        val raw = sqrt(ax * ax + ay * ay + az * az)
+        val filtered = accelBand.process(raw)
+        lastRawMagnitude = raw
+        lastFilteredMagnitude = filtered
 
         // Raw magnitude level, not band-passed - see the Dart implementation for
         // why band-passing the gyroscope breaks faster gaits.

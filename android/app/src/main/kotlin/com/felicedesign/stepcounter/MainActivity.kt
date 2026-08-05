@@ -70,6 +70,13 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
 
+                "setActivityParams" -> {
+                    val json = call.arguments as String
+                    store.activityParamsJson = json
+                    StepSensorService.instance?.applyActivityParams(json)
+                    result.success(true)
+                }
+
                 "setAutoCalibration" -> {
                     store.autoCalibrationEnabled = call.arguments as Boolean
                     result.success(true)
@@ -151,6 +158,7 @@ class MainActivity : FlutterActivity() {
             "hasAccelerometer" to (sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null),
             "hasGyroscope" to (sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null),
             "hasHardwareCounter" to (sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null),
+            "hasBarometer" to (sm.getDefaultSensor(Sensor.TYPE_PRESSURE) != null),
             "autoCalibrationEnabled" to store.autoCalibrationEnabled,
             "autoWindowCount" to store.autoWindowCount(),
             "pendingSteps" to store.pendingTotal(),

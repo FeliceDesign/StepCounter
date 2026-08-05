@@ -7,3 +7,8 @@ reject_vehicle,0
 reject_still,0
 reject_bursts,0
 reject_shaking,0
+act_walk,51,walking
+act_run,60,running
+act_stairs_up,41,stairs_up
+act_stairs_down,41,stairs_down
+act_level_with_baro,51,walking

@@ -27,10 +27,16 @@ class StepStore(context: Context) {
 
     // ---- Pending minute buckets -------------------------------------------
 
+    /**
+     * Keys are `minuteEpoch:activityId`. A composite string keeps this a flat
+     * JSON map — which is what a SharedPreferences value can cheaply be —
+     * while still carrying which activity the steps belong to.
+     */
     @Synchronized
-    fun addSteps(minuteEpoch: Long, count: Int) {
+    fun addSteps(minuteEpoch: Long, activityId: String, count: Int) {
         val obj = pendingObject()
-        obj.put(minuteEpoch.toString(), obj.optInt(minuteEpoch.toString(), 0) + count)
+        val key = "$minuteEpoch:$activityId"
+        obj.put(key, obj.optInt(key, 0) + count)
         trimPending(obj)
         prefs.edit().putString(KEY_PENDING, obj.toString()).apply()
     }
@@ -66,7 +72,9 @@ class StepStore(context: Context) {
      */
     private fun trimPending(obj: JSONObject) {
         val cutoff = (System.currentTimeMillis() / 60_000L) - 30L * 24 * 60
-        val stale = obj.keys().asSequence().filter { (it.toLongOrNull() ?: 0L) < cutoff }.toList()
+        val stale = obj.keys().asSequence().filter {
+            (it.substringBefore(':').toLongOrNull() ?: 0L) < cutoff
+        }.toList()
         stale.forEach { obj.remove(it) }
     }
 
@@ -82,9 +90,17 @@ class StepStore(context: Context) {
      * costs under 2 MB.
      */
     @Synchronized
-    fun saveAutoWindow(packed: ByteArray, ourCount: Int, hardwareCount: Int) {
+    fun saveAutoWindow(
+        packed: ByteArray,
+        ourCount: Int,
+        hardwareCount: Int,
+        packedPressure: ByteArray? = null,
+    ) {
         val ts = System.currentTimeMillis()
         File(calibDir, "$ts.bin").writeBytes(packed)
+        if (packedPressure != null && packedPressure.isNotEmpty()) {
+            File(calibDir, "$ts.baro").writeBytes(packedPressure)
+        }
         File(calibDir, "$ts.json").writeText(
             JSONObject()
                 .put("recordedAt", ts)
@@ -104,11 +120,13 @@ class StepStore(context: Context) {
                 if (!bin.exists()) return@mapNotNull null
                 try {
                     val j = JSONObject(meta.readText())
+                    val baro = File(calibDir, meta.name.removeSuffix(".json") + ".baro")
                     mapOf(
                         "recordedAt" to j.optLong("recordedAt"),
                         "ourCount" to j.optInt("ourCount"),
                         "hardwareCount" to j.optInt("hardwareCount"),
                         "samples" to bin.readBytes(),
+                        "pressureSamples" to if (baro.exists()) baro.readBytes() else null,
                     )
                 } catch (_: Exception) {
                     null
@@ -129,7 +147,9 @@ class StepStore(context: Context) {
             ?.sortedBy { it.name } ?: return
         if (metas.size <= MAX_AUTO_WINDOWS) return
         metas.take(metas.size - MAX_AUTO_WINDOWS).forEach { meta ->
-            File(calibDir, meta.name.removeSuffix(".json") + ".bin").delete()
+            val stem = meta.name.removeSuffix(".json")
+            File(calibDir, "$stem.bin").delete()
+            File(calibDir, "$stem.baro").delete()
             meta.delete()
         }
     }
@@ -143,6 +163,10 @@ class StepStore(context: Context) {
     var paramsJson: String
         get() = prefs.getString(KEY_PARAMS, "") ?: ""
         set(v) = prefs.edit().putString(KEY_PARAMS, v).apply()
+
+    var activityParamsJson: String
+        get() = prefs.getString(KEY_ACTIVITY_PARAMS, "") ?: ""
+        set(v) = prefs.edit().putString(KEY_ACTIVITY_PARAMS, v).apply()
 
     var autoCalibrationEnabled: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CALIB, true)
@@ -164,6 +188,7 @@ class StepStore(context: Context) {
     companion object {
         private const val KEY_PENDING = "pending_buckets"
         private const val KEY_PARAMS = "params_json"
+        private const val KEY_ACTIVITY_PARAMS = "activity_params_json"
         private const val KEY_AUTO_CALIB = "auto_calibration"
         private const val KEY_SERVICE_ENABLED = "service_enabled"
         private const val KEY_HW_BASELINE = "hw_baseline"

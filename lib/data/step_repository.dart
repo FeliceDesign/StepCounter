@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 
 import '../detection/activity.dart';
+import '../detection/activity_optimizer.dart';
 import '../detection/calibration_optimizer.dart';
 import '../detection/calibration_params.dart';
 import '../detection/sensor_sample.dart';
@@ -256,8 +257,40 @@ class StepRepository extends ChangeNotifier {
 
     return runCalibrationInIsolate(CalibrationJob(
       packedSessions: sessions.map((s) => Uint8List.fromList(s.samples)).toList(),
+      packedPressure: sessions
+          .map((s) => s.pressureSamples == null
+              ? null
+              : Uint8List.fromList(s.pressureSamples!))
+          .toList(),
       actualSteps: sessions.map((s) => s.actualSteps).toList(),
       startParamsJson: _params.toJson(),
+      requireHoldout: automatic,
+    ));
+  }
+
+  /// Tunes the activity thresholds against sessions the user labelled.
+  ///
+  /// Only manual sessions carry a declared activity — the hardware pedometer
+  /// counts steps but has no opinion about stairs — so this returns null until
+  /// a few labelled walks exist.
+  Future<ActivityOutcome?> runActivityCalibration({
+    bool automatic = false,
+  }) async {
+    final sessions = (await db.allSessions())
+        .where((s) => s.declaredActivity != null)
+        .toList();
+    if (sessions.isEmpty) return null;
+
+    return runActivityCalibrationInIsolate(ActivityCalibrationJob(
+      packedSessions: sessions.map((s) => Uint8List.fromList(s.samples)).toList(),
+      packedPressure: sessions
+          .map((s) => s.pressureSamples == null
+              ? null
+              : Uint8List.fromList(s.pressureSamples!))
+          .toList(),
+      declaredActivities: sessions.map((s) => s.declaredActivity!).toList(),
+      startParamsJson: _activityParams.toJson(),
+      stepParamsJson: _params.toJson(),
       requireHoldout: automatic,
     ));
   }
@@ -266,14 +299,31 @@ class StepRepository extends ChangeNotifier {
   /// in [CalibrationOptimizer] passes.
   Future<CalibrationOutcome?> runAutomaticCalibration() async {
     await _ingestAutoWindows();
+
+    // Activity thresholds are tuned first so the step optimiser scores
+    // candidates through the same classifier the app will actually run.
+    final activityOutcome = await runActivityCalibration(automatic: true);
+
     final outcome = await runCalibration(automatic: true);
+    final adoptActivity = activityOutcome != null && activityOutcome.accepted;
+
     if (outcome != null && outcome.accepted) {
       await adoptParams(
         outcome.params,
         source: 'automatic',
+        activityParams: adoptActivity ? activityOutcome.params : null,
         holdoutError: outcome.holdoutError,
         baselineError: outcome.baselineHoldoutError,
         sessionCount: outcome.sessionCount,
+      );
+    } else if (adoptActivity) {
+      // The classifier improved even though step counting did not, which is a
+      // perfectly ordinary outcome once stairs are involved.
+      await adoptParams(
+        _params,
+        source: 'automatic',
+        activityParams: activityOutcome.params,
+        sessionCount: activityOutcome.sessionCount,
       );
     }
     return outcome;
@@ -290,7 +340,9 @@ class StepRepository extends ChangeNotifier {
     if (parameters) {
       await db.clearCalibrationVersions();
       _params = CalibrationParams.factory;
+      _activityParams = ActivityParams.factory;
       await bridge.setParams(_params);
+      await bridge.setActivityParams(_activityParams);
       await bridge.resetDetector();
     }
     if (sessions) {

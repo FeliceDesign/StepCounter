@@ -141,6 +141,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   await _loadDiagnostics();
                 },
               ),
+            if (_diagnostics?.hasBarometer == false)
+              const ListTile(
+                leading: Icon(Icons.stairs_outlined),
+                title: Text('No barometer on this device'),
+                subtitle: Text(
+                  'Stairs cannot be detected without one. Walking and running '
+                  'are unaffected.',
+                ),
+              ),
             _DiagnosticsTile(
               diagnostics: _diagnostics,
               onRefresh: _loadDiagnostics,
@@ -299,6 +308,8 @@ class _DiagnosticsTile extends StatelessWidget {
                     d.hasGyroscope ? 'present' : 'absent (reduced accuracy)'),
                 _Row('Built-in step sensor',
                     d.hasHardwareCounter ? 'present' : 'absent'),
+                _Row('Barometer',
+                    d.hasBarometer ? 'present' : 'absent (no stairs)'),
                 _Row('Battery exemption',
                     d.ignoringBatteryOptimizations ? 'granted' : 'not granted'),
                 const Divider(),
@@ -312,6 +323,9 @@ class _DiagnosticsTile extends StatelessWidget {
                       : '${(60000 / d.cadenceMs!).round()} steps/min',
                 ),
                 _Row('Rotation level', d.gyroLevel.toStringAsFixed(3)),
+                _Row('Activity', d.activity.label),
+                _Row('Vertical speed',
+                    '\${d.altitudeRate.toStringAsFixed(2)} m/s'),
               ],
             ),
           ),

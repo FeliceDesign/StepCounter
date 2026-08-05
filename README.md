@@ -46,6 +46,36 @@ frequency, so band-passing it attenuates it more the faster you walk — which
 rejected jogging while accepting a stroll. Mean raw level separates the cases
 cleanly: ~0.004 rad/s in a vehicle, ~0.2–0.5 walking, ~10 shaking the phone.
 
+## Activity detection
+
+Steps are attributed to walking, running, stairs up, or stairs down, and the
+chart colours each day's bar by how it was earned. Still and vehicle are also
+recognised but never contribute steps.
+
+**Walking vs running** turns on the flight phase. Cadence alone cannot decide it
+— a brisk walk reaches 140 spm and overlaps a slow jog — but running lifts both
+feet off the ground, so `|a|` dips toward freefall in a way walking never does.
+Cadence is required, then either that dip or a hard impact confirms it.
+
+**Stairs need the barometer**, and the reason is worth stating because the
+intuition runs the other way. Stair *ascent* produces **lower** peak
+acceleration than level walking — the body is lifted rather than struck against
+the ground — while *descent* produces higher impact than either. Amplitude
+therefore points the wrong way half the time, and an accelerometer-only stair
+classifier confuses ascent with a slow walk and descent with running.
+
+Barometric altitude gives direction of travel unambiguously: ~8.3 m per hPa, so
+a 3 m flight of stairs is roughly ten times sensor noise. Vertical speed comes
+from a least-squares fit over a six-second window rather than a difference
+between two readings — barometer noise is about 0.25 m, which would swamp a
+two-point estimate of a 0.2 m/s climb. Sustained motion is required before
+stairs are claimed, so a door opening cannot register as a flight, and weather
+drift is four orders of magnitude too slow to matter.
+
+Climbing in a lift is not stairs: no steps, no attribution. Devices without a
+barometer never claim stairs at all, and Settings says so rather than silently
+never showing the category.
+
 ## Calibration
 
 Seven interpretable parameters are tuned by coordinate descent — deliberately
@@ -60,7 +90,14 @@ a label read mid-walk would be wrong.
 
 **Test & Recalibrate.** Walk a known number of steps, type in what you counted,
 and the app replays the recording — plus every previously stored session —
-through the real detector.
+through the real detector. You also declare what you were doing, which labels
+the recording so the activity thresholds can be tuned too: a slow climber whose
+0.05 m/s ascent falls below the default 0.08 m/s floor is exactly the case this
+fixes.
+
+Activity thresholds are optimised the same way as the step parameters, scored on
+the share of steps filed under the declared activity rather than on step-count
+error, with the same holdout validation.
 
 Guardrails on both paths:
 
@@ -83,7 +120,8 @@ traceable and reversible.
 |---|---|
 | `android/.../StepSensorService.kt` | Foreground service: sensors, live detection, minute buckets |
 | `android/.../StepDetectorNative.kt` | Kotlin detector (live counting path) |
-| `lib/detection/` | Dart detector (replay path) + optimiser |
+| `android/.../ActivityClassifierNative.kt` | Kotlin activity classifier |
+| `lib/detection/` | Dart detector and classifier (replay path) + optimisers |
 | `lib/data/` | drift schema, repository |
 | `lib/ui/` | Screens |
 
@@ -119,6 +157,7 @@ dart tool/generate_goldens.dart
 | Permission | Why | If denied |
 |---|---|---|
 | `ACTIVITY_RECOGNITION` | Hardware pedometer as a calibration reference | Automatic calibration falls back to manual sessions |
+| _(none)_ | Barometer needs no permission | Stairs unavailable if the device lacks one |
 | `FOREGROUND_SERVICE(_HEALTH)` | Counting with the screen off | Required |
 | `POST_NOTIFICATIONS` | The service's own notification | Service still runs |
 | `RECEIVE_BOOT_COMPLETED` | Resume counting after a reboot | Counting stops until the app is opened |
@@ -149,5 +188,10 @@ tests, then uploads the APK as an artifact.
   since boot; after a few days of uptime that is ~4×10⁸ ms, where float32
   resolves to ~32 ms — coarser than the 20 ms sampling period. Narrowing to
   float happens only after times are made relative to the first sample.
-- Steps are stored in minute buckets: fine enough for any chart the app draws,
-  and ~500k rows a year, which SQLite does not notice.
+- Steps are stored in minute buckets keyed by activity, so one minute can hold
+  both the walk to a staircase and the climb. ~500k rows a year, which SQLite
+  does not notice.
+- Schema v2 added the activity dimension to the step table's primary key.
+  SQLite cannot alter a primary key in place, so the migration rebuilds the
+  table; `test/migration_test.dart` exercises it against a real v1 database.
+  Pre-existing rows are labelled `unknown` rather than guessed at as walking.

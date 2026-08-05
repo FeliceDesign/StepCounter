@@ -13,7 +13,9 @@
 
 import 'dart:io';
 
+import 'package:stepcounter/detection/activity.dart';
 import 'package:stepcounter/detection/golden_fixture.dart';
+import 'package:stepcounter/detection/motion_pipeline.dart';
 import 'package:stepcounter/detection/sensor_sample.dart';
 import 'package:stepcounter/detection/step_detector.dart';
 
@@ -31,6 +33,25 @@ void main() {
     'reject_still': GaitFixtures.still(durationSeconds: 30),
     'reject_bursts': GaitFixtures.isolatedBursts(bursts: 8),
     'reject_shaking': GaitFixtures.shaking(durationSeconds: 20),
+  };
+
+  // Activity goldens carry a barometer track, so they pin stairs detection as
+  // well as the step count.
+  final activityCases = <String, (List<SensorSample>, List<PressureSample>)>{
+    'act_walk': (GaitFixtures.walk(steps: 50), const []),
+    'act_run': (GaitFixtures.run(steps: 60), const []),
+    'act_stairs_up': (
+      GaitFixtures.walk(steps: 40, stepFrequencyHz: 1.5),
+      GaitFixtures.pressureRamp(durationSeconds: 35, verticalSpeed: 0.25),
+    ),
+    'act_stairs_down': (
+      GaitFixtures.walk(steps: 40, stepFrequencyHz: 1.7),
+      GaitFixtures.pressureRamp(durationSeconds: 32, verticalSpeed: -0.3),
+    ),
+    'act_level_with_baro': (
+      GaitFixtures.walk(steps: 50),
+      GaitFixtures.pressureFlat(durationSeconds: 40),
+    ),
   };
 
   final dir = Directory(outputDir)..createSync(recursive: true);
@@ -57,6 +78,56 @@ void main() {
     stdout.writeln('${entry.key}: $expected steps, ${entry.value.length} samples');
   }
 
+  for (final entry in activityCases.entries) {
+    final (samples, pressure) = entry.value;
+
+    final motion = StringBuffer('t_ms,accel_mag,gyro_mag\n');
+    final t0 = samples.first.tNs;
+    for (final s in samples) {
+      motion.writeln('${((s.tNs - t0) / 1e6).toStringAsFixed(2)},'
+          '${s.accelMagnitude.toStringAsFixed(4)},'
+          '${s.gyroMagnitude.toStringAsFixed(4)}');
+    }
+
+    final baro = StringBuffer();
+    for (final p in pressure) {
+      baro.writeln('${((p.tNs - t0) / 1e6).toStringAsFixed(2)},'
+          '${p.hPa.toStringAsFixed(4)}');
+    }
+
+    // Same discipline as above: score the rounded values that reach disk.
+    final parsed = GoldenFixture.parse(entry.key, '# expected=0\n$motion');
+    final restoredPressure = baro.isEmpty
+        ? const <PressureSample>[]
+        : baro.toString().trim().split('\n').map((line) {
+            final p = line.split(',');
+            return PressureSample(
+              tNs: (double.parse(p[0]) * 1e6).round(),
+              hPa: double.parse(p[1]),
+            );
+          }).toList();
+
+    final counts = MotionPipeline.replay(
+      parsed.samples,
+      pressure: restoredPressure,
+    );
+    final total = counts.values.fold<int>(0, (a, b) => a + b);
+    final dominant = counts.isEmpty
+        ? Activity.unknown
+        : counts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+
+    File('${dir.path}/${entry.key}.csv').writeAsStringSync(
+      '# ${entry.key} expected=$total activity=${dominant.id}\n$motion',
+    );
+    if (baro.isNotEmpty) {
+      File('${dir.path}/${entry.key}.baro.csv')
+          .writeAsStringSync('t_ms,hpa\n$baro');
+    }
+    index.writeln('${entry.key},$total,${dominant.id}');
+    stdout.writeln('${entry.key}: $total steps, dominant ${dominant.id}');
+  }
+
   File('${dir.path}/index.csv').writeAsStringSync(index.toString());
-  stdout.writeln('\nWrote ${cases.length} goldens to $outputDir');
+  stdout.writeln('\nWrote ${cases.length + activityCases.length} goldens '
+      'to $outputDir');
 }

@@ -26,6 +26,7 @@ class FakeNativeBridge extends NativeBridge {
           minuteEpoch: minuteEpoch, activity: activity, steps: steps));
   List<AutoWindow> pendingWindows = [];
   Uint8List recordingResult = Uint8List(0);
+  Uint8List? recordingPressureResult;
 
   bool serviceRunning = false;
   bool recording = false;
@@ -92,9 +93,12 @@ class FakeNativeBridge extends NativeBridge {
   Future<void> startRecording() async => recording = true;
 
   @override
-  Future<Uint8List> stopRecording() async {
+  Future<Recording> stopRecording() async {
     recording = false;
-    return recordingResult;
+    return Recording(
+      samples: recordingResult,
+      pressureSamples: recordingPressureResult,
+    );
   }
 
   @override

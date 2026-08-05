@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_scope.dart';
+import '../detection/activity.dart';
+import '../services/native_bridge.dart';
+import '../detection/activity_optimizer.dart';
 import '../detection/calibration_optimizer.dart';
 import '../detection/calibration_params.dart';
 import '../detection/sensor_sample.dart';
-import '../detection/step_detector.dart';
+import '../detection/motion_pipeline.dart';
 
 enum _Stage { intro, countdown, recording, entering, result }
 
@@ -32,11 +35,17 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
   int _countdown = 3;
   int _elapsedSeconds = 0;
 
-  Uint8List? _recorded;
+  Recording? _recorded;
   int _detected = 0;
   final _actualController = TextEditingController();
 
+  /// What the user says they are about to do. Stored with the recording so the
+  /// optimiser can tune the activity thresholds against a real label, not just
+  /// the step count.
+  Activity _declared = Activity.walking;
+
   CalibrationOutcome? _outcome;
+  ActivityOutcome? _activityOutcome;
   bool _busy = false;
   String? _error;
 
@@ -92,9 +101,9 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     _ticker?.cancel();
     // Captured before the await so nothing reaches for context afterwards.
     final scope = AppScope.of(context);
-    final samples = await scope.bridge.stopRecording();
+    final recording = await scope.bridge.stopRecording();
 
-    if (samples.isEmpty) {
+    if (recording.isEmpty) {
       setState(() {
         _stage = _Stage.intro;
         _error = 'No motion data was recorded. Is counting switched on?';
@@ -102,13 +111,17 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
       return;
     }
 
-    final detected = StepDetector.countSteps(
-      SensorSample.unpack(samples),
+    final detected = MotionPipeline.replayTotal(
+      SensorSample.unpack(recording.samples),
+      pressure: recording.pressureSamples == null
+          ? const []
+          : PressureSample.unpack(recording.pressureSamples!),
       params: scope.repository.params,
+      activityParams: scope.repository.activityParams,
     );
 
     setState(() {
-      _recorded = samples;
+      _recorded = recording;
       _detected = detected;
       _stage = _Stage.entering;
     });
@@ -128,17 +141,21 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
 
     final repo = AppScope.of(context).repository;
     await repo.saveManualSession(
-      samples: _recorded!,
+      samples: _recorded!.samples,
+      pressureSamples: _recorded!.pressureSamples,
       actualSteps: actual,
       durationMs: _elapsedSeconds * 1000,
+      declaredActivity: _declared,
     );
 
     final outcome = await repo.runCalibration();
+    final activityOutcome = await repo.runActivityCalibration();
 
     if (!mounted) return;
     setState(() {
       _busy = false;
       _outcome = outcome;
+      _activityOutcome = activityOutcome;
       _stage = _Stage.result;
     });
   }
@@ -148,9 +165,13 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     if (outcome == null) return;
     setState(() => _busy = true);
 
+    final activity = _activityOutcome;
     await AppScope.of(context).repository.adoptParams(
           outcome.params,
           source: 'manual',
+          activityParams: (activity != null && activity.accepted)
+              ? activity.params
+              : null,
           holdoutError: outcome.holdoutError,
           baselineError: outcome.baselineHoldoutError,
           sessionCount: outcome.sessionCount,
@@ -191,6 +212,27 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
         const _Bullet('Fifty steps or more gives the best result.'),
         const _Bullet('Stop, then type in how many you actually took.'),
         const SizedBox(height: 20),
+        Text('What will you be doing?', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        SegmentedButton<Activity>(
+          segments: const [
+            ButtonSegment(value: Activity.walking, label: Text('Walking')),
+            ButtonSegment(value: Activity.running, label: Text('Running')),
+            ButtonSegment(value: Activity.stairsUp, label: Text('Stairs')),
+          ],
+          selected: {_declared},
+          showSelectedIcon: false,
+          onSelectionChanged: (s) => setState(() => _declared = s.first),
+        ),
+        const SizedBox(height: 8),
+        if (_declared == Activity.stairsUp)
+          Text(
+            'Climb rather than descend if you can — going up is the clearer '
+            'signal. Needs a barometer; without one the app can still learn '
+            'your step count from this, just not the stairs part.',
+            style: theme.textTheme.bodySmall,
+          ),
+        const SizedBox(height: 12),
         Text(
           'Your recording is compared against every previous test, not just '
           'this one. Tuning to a single walk makes the counter better at that '
@@ -377,6 +419,33 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
               after: outcome.params,
             ),
           ],
+          if (_activityOutcome != null) ...[
+            const Divider(height: 40),
+            Text('Activity recognition', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _Metric(
+                  label: 'Correct now',
+                  value: '\${(_activityOutcome!.baselineAccuracy * 100).round()}%',
+                ),
+                _Metric(
+                  label: 'Correct after',
+                  value: '\${(_activityOutcome!.accuracy * 100).round()}%',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _activityOutcome!.accepted
+                  ? 'Applying this will also retune how walking, running and '
+                      'stairs are told apart.'
+                  : 'Activity recognition is already as good as these '
+                      'recordings can show — no change proposed.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
           const SizedBox(height: 28),
           Row(
             children: [
@@ -389,11 +458,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed: (outcome == null ||
-                          outcome.params == outcome.baselineParams ||
-                          _busy)
-                      ? null
-                      : _accept,
+                  onPressed: _busy || !_hasSomethingToApply ? null : _accept,
                   child: const Text('Apply'),
                 ),
               ),
@@ -402,6 +467,15 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
         ],
       ),
     );
+  }
+
+  /// True when either optimiser actually proposes a change.
+  bool get _hasSomethingToApply {
+    final o = _outcome;
+    final a = _activityOutcome;
+    final stepChange = o != null && o.params != o.baselineParams;
+    final activityChange = a != null && a.accepted;
+    return stepChange || activityChange;
   }
 
   static String _pct(double normalisedError) =>

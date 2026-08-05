@@ -36,10 +36,12 @@ class StepSensorService : Service(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private lateinit var store: StepStore
     private var detector = StepDetectorNative()
+    private var classifier = ActivityClassifierNative()
 
     private var accelSensor: Sensor? = null
     private var gyroSensor: Sensor? = null
     private var hardwareCounter: Sensor? = null
+    private var barometer: Sensor? = null
 
     private val lastGyro = FloatArray(3)
     private var hasGyroReading = false
@@ -52,11 +54,13 @@ class StepSensorService : Service(), SensorEventListener {
     // ---- Manual recording (Test & Recalibrate) ----
     private var recording = false
     private val recordBuffer = ArrayList<DoubleArray>()
+    private val pressureRecordBuffer = ArrayList<DoubleArray>()
 
     // ---- Automatic calibration window capture ----
     private var windowActive = false
     private var windowSettling = false
     private val windowBuffer = ArrayList<DoubleArray>()
+    private val pressureWindowBuffer = ArrayList<DoubleArray>()
     private var windowStartHardware = -1L
     private var windowOurCount = 0
     private var windowStartElapsedNs = 0L
@@ -73,9 +77,13 @@ class StepSensorService : Service(), SensorEventListener {
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         hardwareCounter = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+        barometer = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
 
         store.paramsJson.takeIf { it.isNotEmpty() }?.let { json ->
             runCatching { detector.params = parseParams(json) }
+        }
+        store.activityParamsJson.takeIf { it.isNotEmpty() }?.let { json ->
+            runCatching { classifier.params = parseActivityParams(json) }
         }
 
         createNotificationChannel()
@@ -123,6 +131,11 @@ class StepSensorService : Service(), SensorEventListener {
         hardwareCounter?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
+        // A barometer reports a few times a second at most and costs almost no
+        // power, so it runs at the slowest rate Android offers.
+        barometer?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+        }
     }
 
     override fun onDestroy() {
@@ -148,6 +161,8 @@ class StepSensorService : Service(), SensorEventListener {
 
             Sensor.TYPE_STEP_COUNTER -> onHardwareCount(event.values[0].toLong())
 
+            Sensor.TYPE_PRESSURE -> onPressure(event.timestamp, event.values[0].toDouble())
+
             Sensor.TYPE_ACCELEROMETER -> onAccel(event)
         }
     }
@@ -169,15 +184,30 @@ class StepSensorService : Service(), SensorEventListener {
         }
 
         val steps = detector.addSample(tNs, ax, ay, az, gx, gy, gz, hasGyroReading)
+        val activity = classifier.update(
+            tNs = tNs,
+            rawMagnitude = detector.lastRawMagnitude,
+            filteredMagnitude = detector.lastFilteredMagnitude,
+            gyroMagnitude = magnitude(gx, gy, gz),
+            hasGyro = hasGyroReading,
+            stepsEmitted = steps.size,
+        )
         if (steps.isNotEmpty()) {
-            onStepsConfirmed(steps)
+            onStepsConfirmed(steps, activity)
         }
 
         maintainCalibrationWindow(tNs, steps.size)
         maybeUpdateNotification()
     }
 
-    private fun onStepsConfirmed(stepTimestampsNs: List<Long>) {
+    private fun onPressure(tNs: Long, hPa: Double) {
+        classifier.addPressure(tNs, hPa)
+        val row = doubleArrayOf(tNs / 1e6, hPa)
+        if (recording) pressureRecordBuffer.add(row)
+        if (windowActive) pressureWindowBuffer.add(row)
+    }
+
+    private fun onStepsConfirmed(stepTimestampsNs: List<Long>, activity: String) {
         val nowMs = System.currentTimeMillis()
         val nowNs = SystemClock.elapsedRealtimeNanos()
 
@@ -191,7 +221,7 @@ class StepSensorService : Service(), SensorEventListener {
             val minute = wallMs / 60_000L
             byMinute[minute] = (byMinute[minute] ?: 0) + 1
         }
-        byMinute.forEach { (minute, count) -> store.addSteps(minute, count) }
+        byMinute.forEach { (minute, count) -> store.addSteps(minute, activity, count) }
 
         // Without this the notification keeps accumulating past midnight and
         // reports a multi-day total as "today".
@@ -208,6 +238,7 @@ class StepSensorService : Service(), SensorEventListener {
             mapOf(
                 "type" to "steps",
                 "count" to stepTimestampsNs.size,
+                "activity" to activity,
                 "pendingTotal" to store.pendingTotal(),
             )
         )
@@ -284,7 +315,12 @@ class StepSensorService : Service(), SensorEventListener {
     private fun finaliseWindow() {
         val hwDelta = (latestHardwareTotal - windowStartHardware).toInt()
         if (hwDelta in 1..MAX_PLAUSIBLE_WINDOW_STEPS) {
-            store.saveAutoWindow(packSamples(windowBuffer), windowOurCount, hwDelta)
+            store.saveAutoWindow(
+                packSamples(windowBuffer),
+                windowOurCount,
+                hwDelta,
+                packPressure(pressureWindowBuffer),
+            )
             listener?.invoke(
                 mapOf(
                     "type" to "autoWindow",
@@ -301,6 +337,7 @@ class StepSensorService : Service(), SensorEventListener {
         windowActive = false
         windowSettling = false
         windowBuffer.clear()
+        pressureWindowBuffer.clear()
         windowOurCount = 0
         windowStartHardware = -1L
     }
@@ -398,22 +435,33 @@ class StepSensorService : Service(), SensorEventListener {
         runCatching { detector.params = parseParams(json) }
     }
 
+    fun applyActivityParams(json: String) {
+        store.activityParamsJson = json
+        runCatching { classifier.params = parseActivityParams(json) }
+    }
+
     fun startRecording() {
         recordBuffer.clear()
+        pressureRecordBuffer.clear()
         recording = true
     }
 
-    fun stopRecording(): ByteArray {
+    /** Motion and barometer blobs, keyed for the method channel. */
+    fun stopRecording(): Map<String, Any?> {
         recording = false
-        val packed = packSamples(recordBuffer)
+        val motion = packSamples(recordBuffer)
+        val pressure = packPressure(pressureRecordBuffer)
         recordBuffer.clear()
-        return packed
+        pressureRecordBuffer.clear()
+        return mapOf("samples" to motion, "pressureSamples" to pressure)
     }
 
-    fun liveDebug(): Map<String, Any?> = detector.debugSnapshot() + mapOf(
+    fun liveDebug(): Map<String, Any?> = detector.debugSnapshot() +
+        classifier.debugSnapshot() + mapOf(
         "todaySteps" to todaySteps,
         "hasGyro" to (gyroSensor != null),
         "hasHardwareCounter" to (hardwareCounter != null),
+        "hasBarometer" to (barometer != null),
         "recording" to recording,
         "autoWindows" to store.autoWindowCount(),
     )
@@ -421,6 +469,7 @@ class StepSensorService : Service(), SensorEventListener {
     fun resetDetector() {
         detector.reset()
         detector.resetCount()
+        classifier.reset()
         todaySteps = 0
         abandonWindow()
     }
@@ -462,11 +511,32 @@ class StepSensorService : Service(), SensorEventListener {
         return out.toByteArray()
     }
 
-    private fun parseParams(json: String): CalibrationParams {
+    private fun parseParams(json: String): CalibrationParams =
+        CalibrationParams.fromMap(jsonToMap(json))
+
+    private fun parseActivityParams(json: String): ActivityParams =
+        ActivityParams.fromMap(jsonToMap(json))
+
+    private fun jsonToMap(json: String): Map<String, Any?> {
         val o = org.json.JSONObject(json)
         val map = HashMap<String, Any?>()
         o.keys().forEach { map[it] = o.get(it) }
-        return CalibrationParams.fromMap(map)
+        return map
+    }
+
+    /** Packs (relative ms, hPa) float32 pairs, matching PressureSample.pack. */
+    private fun packPressure(rows: List<DoubleArray>): ByteArray {
+        if (rows.isEmpty()) return ByteArray(0)
+        val t0 = rows.first()[0]
+        val out = ByteArrayOutputStream(rows.size * 2 * 4)
+        val buf = ByteBuffer.allocate(2 * 4).order(ByteOrder.LITTLE_ENDIAN)
+        for (r in rows) {
+            buf.clear()
+            buf.putFloat((r[0] - t0).toFloat())
+            buf.putFloat(r[1].toFloat())
+            out.write(buf.array())
+        }
+        return out.toByteArray()
     }
 
     companion object {
