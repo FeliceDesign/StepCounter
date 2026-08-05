@@ -154,6 +154,18 @@ class StepDetectorNative(
         val valley = lastValleyValue ?: return emptyList()
         if (peakValue - valley < params.minAmplitude) return emptyList()
 
+        // Gyro gate. Absent a gyroscope this is skipped rather than failed, so
+        // the detector degrades to accelerometer-only instead of counting
+        // nothing. Rejects vehicle vibration (acceleration without rotation)
+        // and shaking (rotation far beyond anything gait produces).
+        if (hasGyro && gyroStats.count >= warmupSamples) {
+            val gs = gyroStats.mean()
+            if (gs < params.gyroMinLevel || gs > params.gyroMaxLevel) {
+                breakStreak()
+                return emptyList()
+            }
+        }
+
         val last = lastCandidateNs ?: return acceptCandidate(peakNs, null)
 
         val dtMs = (peakNs - last) / 1e6
