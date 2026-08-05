@@ -16,10 +16,20 @@ import 'database.dart';
 /// Widgets talk only to this. Nothing else in lib/ knows that steps arrive over
 /// a method channel or that the optimiser wants packed float32 blobs.
 class StepRepository extends ChangeNotifier {
-  StepRepository({required this.db, required this.bridge});
+  StepRepository({
+    required this.db,
+    required this.bridge,
+    this.drainInterval = const Duration(seconds: 30),
+  });
 
   final AppDatabase db;
   final NativeBridge bridge;
+
+  /// How often to poll the service for counted steps, or null to poll never.
+  ///
+  /// Widget tests pass null: a periodic timer makes `pumpAndSettle` loop
+  /// forever, because there is always more scheduled work to run.
+  final Duration? drainInterval;
 
   StreamSubscription<Map<String, dynamic>>? _eventSub;
   Timer? _drainTimer;
@@ -40,9 +50,10 @@ class StepRepository extends ChangeNotifier {
 
     // A periodic drain keeps the on-screen number honest even if an event is
     // dropped, and bounds how much sits in service storage at any moment.
-    _drainTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      drainFromService();
-    });
+    final interval = drainInterval;
+    if (interval != null) {
+      _drainTimer = Timer.periodic(interval, (_) => drainFromService());
+    }
 
     _initialised = true;
     notifyListeners();
@@ -81,21 +92,21 @@ class StepRepository extends ChangeNotifier {
   }
 
   Stream<int> watchToday() {
-    final start = DateUtils.dayStart(DateTime.now());
-    return db.watchStepsBetween(start, DateUtils.nextDay(start));
+    final start = DayMath.dayStart(DateTime.now());
+    return db.watchStepsBetween(start, DayMath.nextDay(start));
   }
 
   Future<int> stepsToday() {
-    final start = DateUtils.dayStart(DateTime.now());
-    return db.stepsBetween(start, DateUtils.nextDay(start));
+    final start = DayMath.dayStart(DateTime.now());
+    return db.stepsBetween(start, DayMath.nextDay(start));
   }
 
   /// Daily totals for the last [days] days, oldest first, including today.
   Future<List<DayTotal>> lastDays(int days) {
-    final today = DateUtils.dayStart(DateTime.now());
+    final today = DayMath.dayStart(DateTime.now());
     return db.dailyTotals(
-      DateUtils.addDays(today, -(days - 1)),
-      DateUtils.nextDay(today),
+      DayMath.addDays(today, -(days - 1)),
+      DayMath.nextDay(today),
     );
   }
 

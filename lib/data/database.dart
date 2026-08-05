@@ -132,15 +132,15 @@ class AppDatabase extends _$AppDatabase {
     ).get();
 
     final totals = <DateTime, int>{};
-    for (var d = DateUtils.dayStart(start);
+    for (var d = DayMath.dayStart(start);
         d.isBefore(end);
-        d = DateUtils.nextDay(d)) {
+        d = DayMath.nextDay(d)) {
       totals[d] = 0;
     }
     for (final r in rows) {
       final ts = DateTime.fromMillisecondsSinceEpoch(
           r.read<int>('minute_epoch') * 60000);
-      final day = DateUtils.dayStart(ts);
+      final day = DayMath.dayStart(ts);
       totals[day] = (totals[day] ?? 0) + r.read<int>('steps');
     }
 
@@ -157,7 +157,7 @@ class AppDatabase extends _$AppDatabase {
     ).getSingle();
     final m = row.read<int?>('m');
     if (m == null) return null;
-    return DateUtils.dayStart(DateTime.fromMillisecondsSinceEpoch(m * 60000));
+    return DayMath.dayStart(DateTime.fromMillisecondsSinceEpoch(m * 60000));
   }
 
   // ---- Calibration sessions ---------------------------------------------
@@ -243,7 +243,7 @@ class DayTotal {
 /// Constructing through DateTime(y, m, d) rather than adding 24 hours keeps
 /// day boundaries correct across daylight-saving transitions, where a day is
 /// 23 or 25 hours long.
-class DateUtils {
+class DayMath {
   static DateTime dayStart(DateTime t) => DateTime(t.year, t.month, t.day);
 
   static DateTime nextDay(DateTime t) => DateTime(t.year, t.month, t.day + 1);

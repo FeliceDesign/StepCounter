@@ -19,43 +19,43 @@ void main() {
       await db.addSteps(m, 5);
       await db.addSteps(m, 7);
 
-      final start = DateUtils.dayStart(DateTime.now());
-      expect(await db.stepsBetween(start, DateUtils.nextDay(start)), 12);
+      final start = DayMath.dayStart(DateTime.now());
+      expect(await db.stepsBetween(start, DayMath.nextDay(start)), 12);
     });
 
     test('ignores non-positive counts', () async {
       final m = minuteOf(DateTime.now());
       await db.addSteps(m, 0);
       await db.addSteps(m, -3);
-      final start = DateUtils.dayStart(DateTime.now());
-      expect(await db.stepsBetween(start, DateUtils.nextDay(start)), 0);
+      final start = DayMath.dayStart(DateTime.now());
+      expect(await db.stepsBetween(start, DayMath.nextDay(start)), 0);
     });
 
     test('a drained batch commits every bucket', () async {
       final base = minuteOf(DateTime.now());
       await db.addStepBatch({base - 2: 3, base - 1: 4, base: 5});
-      final start = DateUtils.dayStart(DateTime.now());
-      expect(await db.stepsBetween(start, DateUtils.nextDay(start)), 12);
+      final start = DayMath.dayStart(DateTime.now());
+      expect(await db.stepsBetween(start, DayMath.nextDay(start)), 12);
     });
 
     test('range query excludes its end bound', () async {
       final now = DateTime.now();
-      final start = DateUtils.dayStart(now);
+      final start = DayMath.dayStart(now);
       await db.addSteps(minuteOf(start), 10);
-      await db.addSteps(minuteOf(DateUtils.nextDay(start)), 99);
+      await db.addSteps(minuteOf(DayMath.nextDay(start)), 99);
 
-      expect(await db.stepsBetween(start, DateUtils.nextDay(start)), 10);
+      expect(await db.stepsBetween(start, DayMath.nextDay(start)), 10);
     });
 
     test('steps land in the day they happened, not the day they were written',
         () async {
-      final today = DateUtils.dayStart(DateTime.now());
-      final threeDaysAgo = DateUtils.addDays(today, -3);
+      final today = DayMath.dayStart(DateTime.now());
+      final threeDaysAgo = DayMath.addDays(today, -3);
       await db.addSteps(minuteOf(threeDaysAgo.add(const Duration(hours: 9))), 250);
 
       final totals = await db.dailyTotals(
-        DateUtils.addDays(today, -6),
-        DateUtils.nextDay(today),
+        DayMath.addDays(today, -6),
+        DayMath.nextDay(today),
       );
       final match = totals.firstWhere((t) => t.day == threeDaysAgo);
       expect(match.steps, 250);
@@ -65,20 +65,20 @@ void main() {
 
   group('daily totals', () {
     test('returns one entry per day including empty ones', () async {
-      final today = DateUtils.dayStart(DateTime.now());
+      final today = DayMath.dayStart(DateTime.now());
       final totals = await db.dailyTotals(
-        DateUtils.addDays(today, -6),
-        DateUtils.nextDay(today),
+        DayMath.addDays(today, -6),
+        DayMath.nextDay(today),
       );
       expect(totals.length, 7);
       expect(totals.every((t) => t.steps == 0), isTrue);
     });
 
     test('is ordered oldest first', () async {
-      final today = DateUtils.dayStart(DateTime.now());
+      final today = DayMath.dayStart(DateTime.now());
       final totals = await db.dailyTotals(
-        DateUtils.addDays(today, -6),
-        DateUtils.nextDay(today),
+        DayMath.addDays(today, -6),
+        DayMath.nextDay(today),
       );
       for (var i = 1; i < totals.length; i++) {
         expect(totals[i].day.isAfter(totals[i - 1].day), isTrue);
@@ -87,7 +87,7 @@ void main() {
 
     test('firstRecordedDay is null until something is recorded', () async {
       expect(await db.firstRecordedDay(), isNull);
-      final today = DateUtils.dayStart(DateTime.now());
+      final today = DayMath.dayStart(DateTime.now());
       await db.addSteps(minuteOf(today.add(const Duration(hours: 2))), 5);
       expect(await db.firstRecordedDay(), today);
     });
@@ -95,13 +95,13 @@ void main() {
 
   group('day arithmetic', () {
     test('addDays crosses month and year boundaries', () {
-      expect(DateUtils.addDays(DateTime(2026, 1, 1), -1), DateTime(2025, 12, 31));
-      expect(DateUtils.addDays(DateTime(2026, 2, 28), 1), DateTime(2026, 3, 1));
+      expect(DayMath.addDays(DateTime(2026, 1, 1), -1), DateTime(2025, 12, 31));
+      expect(DayMath.addDays(DateTime(2026, 2, 28), 1), DateTime(2026, 3, 1));
     });
 
     test('dayStart strips the time component', () {
       expect(
-        DateUtils.dayStart(DateTime(2026, 5, 4, 23, 59, 59)),
+        DayMath.dayStart(DateTime(2026, 5, 4, 23, 59, 59)),
         DateTime(2026, 5, 4),
       );
     });
@@ -197,8 +197,8 @@ void main() {
 
       await db.clearStepHistory();
 
-      final start = DateUtils.dayStart(DateTime.now());
-      expect(await db.stepsBetween(start, DateUtils.nextDay(start)), 0);
+      final start = DayMath.dayStart(DateTime.now());
+      expect(await db.stepsBetween(start, DayMath.nextDay(start)), 0);
       expect((await db.allSessions()).length, 1);
       expect(await db.activeVersion(), isNotNull);
     });
@@ -217,8 +217,8 @@ void main() {
       await db.clearCalibrationSessions();
       await db.clearCalibrationVersions();
 
-      final start = DateUtils.dayStart(DateTime.now());
-      expect(await db.stepsBetween(start, DateUtils.nextDay(start)), 100);
+      final start = DayMath.dayStart(DateTime.now());
+      expect(await db.stepsBetween(start, DayMath.nextDay(start)), 100);
       expect((await db.allSessions()), isEmpty);
     });
   });
