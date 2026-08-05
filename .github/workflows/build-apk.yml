@@ -30,7 +30,7 @@ jobs:
         run: flutter pub get
 
       - name: Generate code
-        run: dart run build_runner build --delete-conflicting-outputs
+        run: dart run build_runner build
 
       - name: Analyze
         run: flutter analyze
@@ -42,6 +42,17 @@ jobs:
       # any keystore secrets in CI. See android/app/build.gradle.kts.
       - name: Build release APK
         run: flutter build apk --release
+
+      # Runs after the Flutter build because that is what injects the Gradle
+      # wrapper and local.properties into android/.
+      #
+      # These are the golden-fixture tests that pin the Kotlin detector to the
+      # same expected counts as the Dart one. Kotlin counts steps live while
+      # Dart replays sessions during calibration, so a drift between them would
+      # make every before/after number describe the wrong algorithm.
+      - name: Kotlin detector tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest
 
       - uses: actions/upload-artifact@v4
         with:

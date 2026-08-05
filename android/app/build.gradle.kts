@@ -15,23 +15,35 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.felicedesign.stepcounter"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        // 26 is the floor for the notification-channel APIs the foreground
+        // service relies on.
+        minSdk = 26
+        targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Signed with the debug key on purpose: this app is distributed as a
+            // sideloaded APK from CI, so a release build that needs no keystore
+            // secrets is exactly what we want.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+
+    // DetectionGoldenTest pins the Kotlin detector to the same golden fixtures
+    // the Dart tests use, so the live and replay implementations cannot drift.
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

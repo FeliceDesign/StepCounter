@@ -1,0 +1,9 @@
+# name,expected_steps
+walk_normal,61
+walk_slow,41
+walk_jog,60
+walk_damped,40
+reject_vehicle,0
+reject_still,0
+reject_bursts,0
+reject_shaking,0
