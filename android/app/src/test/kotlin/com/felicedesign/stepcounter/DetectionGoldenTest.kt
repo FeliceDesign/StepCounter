@@ -45,7 +45,10 @@ class DetectionGoldenTest {
                     if (p.size >= 3) {
                         samples.add(
                             Sample(
-                                tNs = (p[0].toDouble() * 1e6).toLong(),
+                                // Rounded, not truncated, to match the Dart
+                                // parser exactly. Both sides must turn the same
+                                // text into the same integer.
+                                tNs = Math.round(p[0].toDouble() * 1e6),
                                 accelMag = p[1].toDouble(),
                                 gyroMag = p[2].toDouble(),
                             )

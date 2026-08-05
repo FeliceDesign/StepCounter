@@ -27,6 +27,7 @@ class FakeNativeBridge extends NativeBridge {
   Map<String, dynamic> diagnosticsPayload = const {};
 
   int drainCallCount = 0;
+  int? todayTotalPushed;
 
   @override
   Stream<Map<String, dynamic>> get events => _events.stream;
@@ -81,6 +82,9 @@ class FakeNativeBridge extends NativeBridge {
     recording = false;
     return recordingResult;
   }
+
+  @override
+  Future<void> setTodayTotal(int total) async => todayTotalPushed = total;
 
   @override
   Future<void> resetDetector() async => detectorReset = true;

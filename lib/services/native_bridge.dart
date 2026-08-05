@@ -121,6 +121,11 @@ class NativeBridge {
   Future<Uint8List> stopRecording() async =>
       await _call<Uint8List>('stopRecording') ?? Uint8List(0);
 
+  /// Tells the service today's authoritative total so its notification is
+  /// right even though it counted only part of the day itself.
+  Future<void> setTodayTotal(int total) =>
+      _call<bool>('setTodayTotal', total);
+
   Future<void> resetDetector() => _call<bool>('resetDetector');
 
   Future<void> clearAutoWindows() => _call<bool>('clearAutoWindows');

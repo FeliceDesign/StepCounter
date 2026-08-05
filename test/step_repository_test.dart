@@ -55,6 +55,18 @@ void main() {
       expect(await repo.stepsToday(), 0);
     });
 
+    test('hands the authoritative daily total back to the service', () async {
+      // The service only counts from when it started, so it cannot know the
+      // total for a day that began before it did.
+      bridge.pendingBuckets = {minuteOf(DateTime.now()): 120};
+      await repo.drainFromService();
+      expect(bridge.todayTotalPushed, 120);
+
+      bridge.pendingBuckets = {minuteOf(DateTime.now()): 30};
+      await repo.drainFromService();
+      expect(bridge.todayTotalPushed, 150);
+    });
+
     test('initialise pulls across what the service counted while away',
         () async {
       bridge.pendingBuckets = {minuteOf(DateTime.now()): 42};

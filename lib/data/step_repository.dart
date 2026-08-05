@@ -88,6 +88,11 @@ class StepRepository extends ChangeNotifier {
     final buckets = await bridge.drainBuckets();
     if (buckets.isEmpty) return;
     await db.addStepBatch(buckets);
+
+    // The service only knows what it counted since it started, so its
+    // notification would restart from zero partway through the day. We hold the
+    // real total, so we hand it back.
+    await bridge.setTodayTotal(await stepsToday());
     notifyListeners();
   }
 

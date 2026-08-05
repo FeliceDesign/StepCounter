@@ -94,6 +94,12 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "setTodayTotal" -> {
+                    StepSensorService.instance
+                        ?.setTodayTotal((call.arguments as Number).toInt())
+                    result.success(true)
+                }
+
                 "resetDetector" -> {
                     StepSensorService.instance?.resetDetector()
                     result.success(true)
@@ -137,8 +143,10 @@ class MainActivity : FlutterActivity() {
 
     private fun diagnostics(store: StepStore): Map<String, Any?> {
         val sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val live = StepSensorService.instance?.liveDebug() ?: emptyMap()
-        return mapOf(
+        val live: Map<String, Any?> = StepSensorService.instance?.liveDebug() ?: emptyMap()
+        // Typed explicitly: mapOf here infers Map<String, Any>, which will not
+        // accept a Map<String, Any?> on the right of `plus`.
+        val base: Map<String, Any?> = mapOf(
             "serviceRunning" to StepSensorService.isRunning,
             "hasAccelerometer" to (sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null),
             "hasGyroscope" to (sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null),
@@ -147,7 +155,8 @@ class MainActivity : FlutterActivity() {
             "autoWindowCount" to store.autoWindowCount(),
             "pendingSteps" to store.pendingTotal(),
             "ignoringBatteryOptimizations" to isIgnoringBatteryOptimizations(),
-        ) + live
+        )
+        return base + live
     }
 
     /**

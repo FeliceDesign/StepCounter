@@ -45,6 +45,7 @@ class StepSensorService : Service(), SensorEventListener {
     private var hasGyroReading = false
 
     private var todaySteps = 0
+    private var todayIndex = localDayIndex()
     private var lastNotificationSteps = -1
     private var lastNotificationMs = 0L
 
@@ -192,6 +193,13 @@ class StepSensorService : Service(), SensorEventListener {
         }
         byMinute.forEach { (minute, count) -> store.addSteps(minute, count) }
 
+        // Without this the notification keeps accumulating past midnight and
+        // reports a multi-day total as "today".
+        val day = localDayIndex()
+        if (day != todayIndex) {
+            todayIndex = day
+            todaySteps = 0
+        }
         todaySteps += stepTimestampsNs.size
         windowOurCount += stepTimestampsNs.size
         lastStepElapsedNs = SystemClock.elapsedRealtimeNanos()
@@ -360,6 +368,30 @@ class StepSensorService : Service(), SensorEventListener {
     }
 
     // ---- Commands from Dart -----------------------------------------------
+
+    /**
+     * Dart is the authority on today's total, because it holds the database and
+     * knows about steps counted by earlier service instances. A freshly started
+     * service has counted nothing yet, so without this the notification would
+     * restart from zero partway through the day.
+     */
+    fun setTodayTotal(total: Int) {
+        todaySteps = total
+        todayIndex = localDayIndex()
+        lastNotificationMs = 0L
+        maybeUpdateNotification()
+    }
+
+    /** Days since the epoch in the device's current local time zone. */
+    private fun localDayIndex(): Int {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = System.currentTimeMillis()
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        return (cal.timeInMillis / 86_400_000L).toInt()
+    }
 
     fun applyParams(json: String) {
         store.paramsJson = json

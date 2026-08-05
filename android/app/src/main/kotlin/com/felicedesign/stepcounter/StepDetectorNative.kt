@@ -11,10 +11,10 @@ import kotlin.math.sqrt
  * two are kept in agreement.
  */
 class StepDetectorNative(
-    params: CalibrationParams = CalibrationParams.FACTORY,
+    initialParams: CalibrationParams = CalibrationParams.FACTORY,
     private val sampleRateHz: Double = 50.0,
 ) {
-    var params: CalibrationParams = params.clamped()
+    var params: CalibrationParams = initialParams.clamped()
         set(value) {
             field = value.clamped()
             reset()
@@ -24,7 +24,12 @@ class StepDetectorNative(
     private val stats = RollingStats((sampleRateHz * STATS_WINDOW_SECONDS).toInt())
     private val gyroStats = RollingStats((sampleRateHz * STATS_WINDOW_SECONDS).toInt())
 
-    private val smoothBuf = ArrayDeque<Double>()
+    // Plain ring buffer rather than ArrayDeque: this runs on every sensor
+    // sample, and it avoids the boxing a Deque<Double> would do fifty times a
+    // second for the lifetime of the service.
+    private val smoothBuf = DoubleArray(SMOOTHING_SAMPLES)
+    private var smoothHead = 0
+    private var smoothCount = 0
     private var smoothSum = 0.0
 
     private var v0: Double? = null
@@ -49,7 +54,9 @@ class StepDetectorNative(
         accelBand.reset()
         stats.reset()
         gyroStats.reset()
-        smoothBuf.clear()
+        smoothBuf.fill(0.0)
+        smoothHead = 0
+        smoothCount = 0
         smoothSum = 0.0
         v0 = null; v1 = null; v2 = null
         t1 = null
@@ -84,10 +91,15 @@ class StepDetectorNative(
         // why band-passing the gyroscope breaks faster gaits.
         if (hasGyro) gyroStats.add(sqrt(gx * gx + gy * gy + gz * gz))
 
-        smoothBuf.addLast(filtered)
+        if (smoothCount == SMOOTHING_SAMPLES) {
+            smoothSum -= smoothBuf[smoothHead]
+        } else {
+            smoothCount++
+        }
+        smoothBuf[smoothHead] = filtered
         smoothSum += filtered
-        if (smoothBuf.size > SMOOTHING_SAMPLES) smoothSum -= smoothBuf.removeFirst()
-        val smoothed = smoothSum / smoothBuf.size
+        smoothHead = (smoothHead + 1) % SMOOTHING_SAMPLES
+        val smoothed = smoothSum / smoothCount
 
         stats.add(smoothed)
 
