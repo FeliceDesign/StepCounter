@@ -84,6 +84,12 @@ class Diagnostics {
   /// Build and hardware identity, carried into the JSON export so a dump says
   /// which version produced it — two dumps are only comparable if you know
   /// whether the detector changed between them.
+  /// Whether the accelerometer in use wakes the processor, and whether the
+  /// service is holding a wake lock. Together these decide whether counting
+  /// survives the screen going off.
+  bool get accelIsWakeUp => raw['accelIsWakeUp'] == true;
+  bool get wakeLockHeld => raw['wakeLockHeld'] == true;
+
   String? get appVersion => raw['appVersion'] as String?;
   String? get deviceModel => raw['deviceModel'] as String?;
   int? get androidSdk => (raw['androidSdk'] as num?)?.toInt();

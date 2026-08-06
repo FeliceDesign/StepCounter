@@ -1,5 +1,6 @@
 package com.felicedesign.stepcounter
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -14,6 +15,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -74,14 +76,45 @@ class StepSensorService : Service(), SensorEventListener {
 
     private var latestHardwareTotal = -1L
 
+    /**
+     * Held for as long as the service is counting.
+     *
+     * Belt and braces alongside the wake-up sensors above, and deliberately
+     * so: wake-up variants are optional for OEMs, plenty of devices expose
+     * none, and on those the fallback is the ordinary sensor, which delivers
+     * nothing while the processor sleeps. A step counter that silently counts
+     * nothing is worse than one that costs a little battery, and the user has
+     * explicitly switched counting on.
+     *
+     * The cost is bounded by the one-second batching: the processor wakes
+     * about once a second rather than fifty times.
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         store = StepStore(this)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        // Wake-up variants first, falling back to the ordinary ones.
+        //
+        // This is what screen-off counting turns on. getDefaultSensor(type)
+        // returns the *non-wake-up* sensor, which by contract never wakes the
+        // application processor: with the screen off the AP suspends, readings
+        // accumulate in the hardware FIFO, and at 50 Hz that fills within
+        // seconds and then drops everything after it. The detector sees the
+        // dropped stretch as a gap far beyond MAX_GAP_MS, resets, and never
+        // accumulates a streak — so a walk with the phone pocketed counted
+        // nothing at all.
+        //
+        // A wake-up sensor is required to deliver within its reporting
+        // latency even while the AP is asleep, so the one-second batching
+        // still holds and nothing is lost.
+        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE, true)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         hardwareCounter = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         barometer = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
 
@@ -93,6 +126,27 @@ class StepSensorService : Service(), SensorEventListener {
         }
 
         createNotificationChannel()
+    }
+
+    // Deliberately untimed. Lint wants a timeout because a leaked wake lock
+    // flattens a battery, but the lock's lifetime here is exactly the
+    // service's: acquired when sensors are registered, released in onDestroy,
+    // and the user can end it at any time with the Count steps switch. A
+    // timeout would mean counting quietly stopping after n hours, which is the
+    // bug this exists to fix.
+    @SuppressLint("WakelockTimeout")
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,13 +175,20 @@ class StepSensorService : Service(), SensorEventListener {
     }
 
     private fun registerSensors() {
+        acquireWakeLock()
         // SENSOR_DELAY_GAME is 20 ms (50 Hz), comfortably inside the 200 Hz cap
         // Android 12+ applies without HIGH_SAMPLING_RATE_SENSORS.
         //
-        // The one-second batch latency is the single biggest battery lever here:
-        // it lets the sensor hub buffer readings and deliver them in bursts
-        // while the application processor stays asleep, instead of waking it
-        // fifty times a second.
+        // The one-second batch latency is the single biggest battery lever
+        // here: the sensor hub buffers readings and delivers them in bursts,
+        // so the processor wakes about once a second instead of fifty times.
+        //
+        // Batching alone was never enough, which is what the screen-off bug
+        // was. A hardware FIFO only holds a few seconds at 50 Hz, and a
+        // non-wake-up sensor will not wake the processor to drain it — so the
+        // overflow was silently discarded. The wake-up sensors chosen in
+        // onCreate, and the wake lock above, are what make the buffering
+        // actually survive a sleeping device.
         accelSensor?.let {
             sensorManager.registerListener(this, it, SAMPLING_PERIOD_US, BATCH_LATENCY_US)
         }
@@ -145,6 +206,7 @@ class StepSensorService : Service(), SensorEventListener {
     }
 
     override fun onDestroy() {
+        releaseWakeLock()
         sensorManager.unregisterListener(this)
         isRunning = false
         instance = null
@@ -527,6 +589,10 @@ class StepSensorService : Service(), SensorEventListener {
         "hardwareToday" to hardwareTodaySteps(),
         "recording" to recording,
         "autoWindows" to store.autoWindowCount(),
+        // Both surfaced because "counts with the screen on, nothing with it
+        // off" has exactly one likely cause, and this says whether it applies.
+        "accelIsWakeUp" to (accelSensor?.isWakeUpSensor == true),
+        "wakeLockHeld" to (wakeLock?.isHeld == true),
     )
 
     fun resetDetector() {
@@ -606,6 +672,8 @@ class StepSensorService : Service(), SensorEventListener {
         const val CHANNEL_ID = "stepcounter_counting"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.felicedesign.stepcounter.STOP"
+
+        private const val WAKE_LOCK_TAG = "stepcounter:counting"
 
         private const val SAMPLING_PERIOD_US = 20_000      // 50 Hz
         private const val BATCH_LATENCY_US = 1_000_000     // 1 s of batching

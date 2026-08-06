@@ -14,6 +14,12 @@
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
+    <!-- Counting stops dead when the processor suspends unless something holds
+         it awake. Not every device offers a wake-up accelerometer, and on the
+         ones that do not, this is the difference between counting a walk with
+         the phone in a pocket and counting nothing at all. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
     <!-- Offering the OEM battery-optimisation exemption; several skins kill
          background services without it. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>

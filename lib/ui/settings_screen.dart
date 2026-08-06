@@ -381,6 +381,16 @@ class _DiagnosticsTile extends StatelessWidget {
                 const Divider(),
                 _Row('Recordings awaiting import', '${d.autoWindowCount}'),
                 _Row('Steps awaiting sync', '${d.pendingSteps}'),
+                // The pair that answers "why did it count nothing overnight".
+                _Row(
+                  'Counting with screen off',
+                  d.serviceRunning
+                      ? (d.accelIsWakeUp || d.wakeLockHeld ? 'yes' : 'AT RISK')
+                      : 'service stopped',
+                ),
+                _Row('Wake-up accelerometer',
+                    d.accelIsWakeUp ? 'available' : 'not on this device'),
+                _Row('Keeping processor awake', d.wakeLockHeld ? 'yes' : 'no'),
                 _Row('Currently walking', d.inConfirmedRun ? 'yes' : 'no'),
                 _Row(
                   'Cadence',
