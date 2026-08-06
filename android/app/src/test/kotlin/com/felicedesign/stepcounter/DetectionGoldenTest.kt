@@ -24,7 +24,23 @@ class DetectionGoldenTest {
         val pressure: List<Pressure>,
     )
 
-    private data class Sample(val tNs: Long, val accelMag: Double, val gyroMag: Double)
+    /**
+     * One golden row, always as six axes.
+     *
+     * Magnitude-only fixtures are widened here by placing each magnitude on x,
+     * exactly as the Dart parser does. That is lossless for every gate that
+     * reads sqrt(x^2+y^2+z^2) - which is all of them except the vertical-share
+     * gate, and fixtures that exist to pin that gate store all six axes. See
+     * GoldenFixture.parse for the full reasoning.
+     */
+    private data class Sample(
+        val tNs: Long,
+        val ax: Double, val ay: Double, val az: Double,
+        val gx: Double, val gy: Double, val gz: Double,
+    ) {
+        val accelMag: Double get() = Math.sqrt(ax * ax + ay * ay + az * az)
+        val gyroMag: Double get() = Math.sqrt(gx * gx + gy * gy + gz * gz)
+    }
 
     private data class Pressure(val tNs: Long, val hPa: Double)
 
@@ -67,15 +83,22 @@ class DetectionGoldenTest {
                 line.startsWith("t_ms") -> Unit
                 else -> {
                     val p = line.split(",")
-                    if (p.size >= 3) {
+                    // Rounded, not truncated, to match the Dart parser exactly.
+                    // Both sides must turn the same text into the same integer.
+                    if (p.size >= 7) {
                         samples.add(
                             Sample(
-                                // Rounded, not truncated, to match the Dart
-                                // parser exactly. Both sides must turn the same
-                                // text into the same integer.
                                 tNs = Math.round(p[0].toDouble() * 1e6),
-                                accelMag = p[1].toDouble(),
-                                gyroMag = p[2].toDouble(),
+                                ax = p[1].toDouble(), ay = p[2].toDouble(), az = p[3].toDouble(),
+                                gx = p[4].toDouble(), gy = p[5].toDouble(), gz = p[6].toDouble(),
+                            )
+                        )
+                    } else if (p.size >= 3) {
+                        samples.add(
+                            Sample(
+                                tNs = Math.round(p[0].toDouble() * 1e6),
+                                ax = p[1].toDouble(), ay = 0.0, az = 0.0,
+                                gx = p[2].toDouble(), gy = 0.0, gz = 0.0,
                             )
                         )
                     }
@@ -104,7 +127,7 @@ class DetectionGoldenTest {
                 p++
             }
             val steps = detector.addSample(
-                s.tNs, s.accelMag, 0.0, 0.0, s.gyroMag, 0.0, 0.0, true,
+                s.tNs, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, true,
             )
             val activity = classifier.update(
                 tNs = s.tNs,
@@ -149,8 +172,8 @@ class DetectionGoldenTest {
         for (s in golden.samples) {
             d.addSample(
                 tNs = s.tNs,
-                ax = s.accelMag, ay = 0.0, az = 0.0,
-                gx = s.gyroMag, gy = 0.0, gz = 0.0,
+                ax = s.ax, ay = s.ay, az = s.az,
+                gx = s.gx, gy = s.gy, gz = s.gz,
                 hasGyro = true,
             )
         }
@@ -219,6 +242,36 @@ class DetectionGoldenTest {
         }
     }
 
+    /**
+     * Hand jiggle is the one negative that cannot be held to exactly zero, so
+     * it gets a budget rather than an equality. Before the rhythm-quality and
+     * vertical-share gates this fixture scored 278; the budget is what stops
+     * that regressing quietly back toward it.
+     */
+    @Test
+    fun handJiggleIsAlmostEntirelyRejected() {
+        val counted = load("reject_jiggle").expected
+        assertTrue("three minutes of jiggle counted " + counted, counted <= 15)
+    }
+
+    /**
+     * The regression test for the confirmed-run latch. The old detector counted
+     * straight through the jiggle because the walk had already confirmed the
+     * run and nothing ever re-checked it - 204 steps for a 60-step walk.
+     */
+    @Test
+    fun aConfirmedWalkDoesNotLicenseCountingThroughJiggle() {
+        val counted = load("walk_then_jiggle").expected
+        assertTrue("walk-then-jiggle counted " + counted, counted in 55..80)
+    }
+
+    /** Walking with the phone in a swinging hand must still be counted. */
+    @Test
+    fun armSwingWalkingIsStillCounted() {
+        val counted = load("walk_arm_swing").expected
+        assertTrue("arm-swing walk counted " + counted, counted >= 50)
+    }
+
     @Test
     fun paramsAreClampedIntoLegalRange() {
         val wild = CalibrationParams(
@@ -226,11 +279,17 @@ class DetectionGoldenTest {
             minAmplitude = -5.0,
             minStepIntervalMs = 1,
             regularityRunLength = 500,
+            offRhythmTolerance = 9.0,
+            maxIntervalCv = -1.0,
+            minVerticalShare = 4.0,
         ).clamped()
         assertEquals(2.0, wild.thresholdSigma, 1e-9)
         assertEquals(0.1, wild.minAmplitude, 1e-9)
         assertEquals(180, wild.minStepIntervalMs)
         assertEquals(8, wild.regularityRunLength)
+        assertEquals(1.0, wild.offRhythmTolerance, 1e-9)
+        assertEquals(0.08, wild.maxIntervalCv, 1e-9)
+        assertEquals(0.9, wild.minVerticalShare, 1e-9)
     }
 
     @Test
@@ -238,7 +297,7 @@ class DetectionGoldenTest {
         val golden = load("walk_normal")
         val d = StepDetectorNative()
         for (s in golden.samples) {
-            d.addSample(s.tNs, s.accelMag, 0.0, 0.0, s.gyroMag, 0.0, 0.0, true)
+            d.addSample(s.tNs, s.ax, s.ay, s.az, s.gx, s.gy, s.gz, true)
         }
         val before = d.totalSteps
         // A ten-minute jump must not manufacture steps.

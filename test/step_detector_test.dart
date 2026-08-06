@@ -78,7 +78,7 @@ void main() {
             GaitFixtures.lowAmplitudeMotion(amplitude: amp),
           ),
           0,
-          reason: 'amplitude \$amp should be below the motion floor',
+          reason: 'amplitude $amp should be below the motion floor',
         );
       }
     });
@@ -278,4 +278,118 @@ void main() {
       );
     });
   });
+
+  group('rejects hand jiggle', () {
+    // The complaint this group exists for: during real walking the detector
+    // tracked Android's own counter closely, but small movements of a phone
+    // held in the hand counted up while Android understood they were not
+    // walking. Three minutes of fidgeting scored 278 steps.
+    //
+    // The fixture is built so that no *earlier* gate can be what rejects it:
+    // it is above the motion floor, above the amplitude floor, inside the gait
+    // frequency band and inside the gyroscope band. Only the rhythm-quality
+    // and vertical-share gates can act on it.
+
+    test('three minutes of hand jiggle counts almost nothing', () {
+      expect(
+        StepDetector.countSteps(GaitFixtures.handJiggle(durationSeconds: 180)),
+        lessThanOrEqualTo(15),
+      );
+    });
+
+    test('a confirmed walk does not license counting through jiggle', () {
+      // The direct regression test for the confirmed-run latch. The old
+      // detector flipped to "confirmed" during the walk and then counted every
+      // peak of the jiggle without re-checking anything, turning 60 real steps
+      // into 204.
+      final samples = GaitFixtures.concat([
+        GaitFixtures.walk(steps: 60),
+        GaitFixtures.handJiggle(durationSeconds: 90),
+      ]);
+      expect(StepDetector.countSteps(samples), inInclusiveRange(55, 80));
+    });
+
+    test('the vertical-share gate is what rejects it', () {
+      // The mechanism check. After the autocorrelation episode recorded in the
+      // README — a gate that worked, but not for the reason claimed — a new
+      // gate has to demonstrate that it is the thing doing the work.
+      final jiggle = GaitFixtures.handJiggle(durationSeconds: 180);
+
+      final withoutGate = StepDetector.countSteps(
+        jiggle,
+        params: CalibrationParams.factory.copyWith(minVerticalShare: 0),
+      );
+      final withGate = StepDetector.countSteps(jiggle);
+
+      expect(withoutGate, greaterThan(100));
+      expect(withGate, lessThanOrEqualTo(15));
+    });
+
+    test('the interval-CV gate rejects most of it on its own', () {
+      // The fallback, and why it is kept even though the vertical-share gate
+      // dominates: the vertical gate stands aside whenever the gravity
+      // estimate stops looking like gravity, and this is what remains.
+      final jiggle = GaitFixtures.handJiggle(durationSeconds: 180);
+      final noGates = CalibrationParams.factory
+          .copyWith(minVerticalShare: 0, maxIntervalCv: 1.0, offRhythmTolerance: 1.0);
+
+      expect(
+        StepDetector.countSteps(jiggle, params: noGates),
+        greaterThan(250),
+      );
+      expect(
+        StepDetector.countSteps(
+          jiggle,
+          params: noGates.copyWith(maxIntervalCv: 0.15),
+        ),
+        lessThan(160),
+      );
+    });
+
+    test('counted steps are never retracted when a run degrades', () {
+      // Dropping out of a confirmed run must not claw back steps already
+      // counted. A total that goes backwards is worse than one slightly too
+      // high, and the daily history has already been written by then.
+      final d = StepDetector();
+      var previous = 0;
+      for (final s in GaitFixtures.concat([
+        GaitFixtures.walk(steps: 60),
+        GaitFixtures.handJiggle(durationSeconds: 60),
+      ])) {
+        d.addSample(s);
+        expect(d.totalSteps, greaterThanOrEqualTo(previous));
+        previous = d.totalSteps;
+      }
+    });
+
+    test('walking with the phone in a swinging hand is still counted', () {
+      // The constraint that keeps minVerticalShare at 0.45. An arm swings once
+      // per stride, adding a large horizontal component at half the step
+      // frequency; at 0.55 this case collapses to zero steps.
+      expect(
+        StepDetector.countSteps(GaitFixtures.walkWithArmSwing(steps: 60)),
+        inInclusiveRange(50, 62),
+      );
+      expect(
+        StepDetector.countSteps(
+          GaitFixtures.walkWithArmSwing(steps: 60, swingAmplitude: 5.0),
+        ),
+        greaterThanOrEqualTo(45),
+      );
+    });
+
+    test('ordinary walking is untouched by any of it', () {
+      // The guard against over-fixing. Every gate added here is subtractive,
+      // so the only way to know they did not cost real steps is to say so.
+      expect(StepDetector.countSteps(GaitFixtures.walk(steps: 60)),
+          inInclusiveRange(58, 62));
+      expect(
+          StepDetector.countSteps(
+              GaitFixtures.walk(steps: 40, stepFrequencyHz: 1.1, amplitude: 1.2)),
+          inInclusiveRange(38, 42));
+      expect(StepDetector.countSteps(GaitFixtures.run(steps: 60)),
+          inInclusiveRange(58, 62));
+    });
+  });
+
 }

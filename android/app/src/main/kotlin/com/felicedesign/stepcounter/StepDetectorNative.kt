@@ -1,5 +1,7 @@
 package com.felicedesign.stepcounter
 
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
@@ -24,6 +26,15 @@ class StepDetectorNative(
     private val stats = RollingStats((sampleRateHz * STATS_WINDOW_SECONDS).toInt())
     private val gyroStats = RollingStats((sampleRateHz * STATS_WINDOW_SECONDS).toInt())
 
+    // Acceleration resolved along, and across, the estimated gravity direction.
+    private val verticalStats = RollingStats((sampleRateHz * STATS_WINDOW_SECONDS).toInt())
+    private val horizontalStats = RollingStats((sampleRateHz * STATS_WINDOW_SECONDS).toInt())
+
+    private var gvx = 0.0
+    private var gvy = 0.0
+    private var gvz = 0.0
+    private var hasGravity = false
+
     // Plain ring buffer rather than ArrayDeque: this runs on every sensor
     // sample, and it avoids the boxing a Deque<Double> would do fifty times a
     // second for the lifetime of the service.
@@ -40,6 +51,10 @@ class StepDetectorNative(
     private var lastValleyValue: Double? = null
     private var lastCandidateNs: Long? = null
     private var cadenceMs: Double? = null
+
+    // Recent accepted step intervals: the run's quality, re-judged on every
+    // candidate. See runIsRhythmic().
+    private val recentIntervalsMs = ArrayList<Double>()
 
     private val pending = ArrayList<Long>()
     private var inConfirmedRun = false
@@ -65,6 +80,11 @@ class StepDetectorNative(
         accelBand.reset()
         stats.reset()
         gyroStats.reset()
+        verticalStats.reset()
+        horizontalStats.reset()
+        gvx = 0.0; gvy = 0.0; gvz = 0.0
+        hasGravity = false
+        recentIntervalsMs.clear()
         smoothBuf.fill(0.0)
         smoothHead = 0
         smoothCount = 0
@@ -100,6 +120,31 @@ class StepDetectorNative(
         val filtered = accelBand.process(raw)
         lastRawMagnitude = raw
         lastFilteredMagnitude = filtered
+
+        // Gravity estimate, and the split of acceleration along versus across
+        // it. The one place the detector looks at direction rather than at the
+        // orientation-free magnitude - see the Dart implementation for why
+        // that is what separates walking from a hand fidgeting with the phone.
+        if (hasGravity) {
+            gvx += GRAVITY_ALPHA * (ax - gvx)
+            gvy += GRAVITY_ALPHA * (ay - gvy)
+            gvz += GRAVITY_ALPHA * (az - gvz)
+        } else {
+            gvx = ax; gvy = ay; gvz = az
+            hasGravity = true
+        }
+        val gMag = sqrt(gvx * gvx + gvy * gvy + gvz * gvz)
+        if (gMag > 0) {
+            val ux = gvx / gMag
+            val uy = gvy / gMag
+            val uz = gvz / gMag
+            val along = ax * ux + ay * uy + az * uz
+            val hx = ax - ux * along
+            val hy = ay - uy * along
+            val hz = az - uz * along
+            verticalStats.add(along)
+            horizontalStats.add(sqrt(hx * hx + hy * hy + hz * hz))
+        }
 
         // Raw magnitude level, not band-passed - see the Dart implementation for
         // why band-passing the gyroscope breaks faster gaits.
@@ -148,6 +193,16 @@ class StepDetectorNative(
             return emptyList()
         }
 
+        // Vertical share, placed directly after the motion floor: it too asks
+        // whether this is the right *kind* of movement, before any question of
+        // how big or how well timed it is.
+        if (gravityTrusted() && verticalStats.count >= warmupSamples) {
+            if (verticalShare() < params.minVerticalShare) {
+                breakStreak()
+                return emptyList()
+            }
+        }
+
         val threshold = stats.mean() + params.thresholdSigma * stats.stdDev()
         if (peakValue <= threshold) return emptyList()
 
@@ -172,7 +227,9 @@ class StepDetectorNative(
         if (dtMs < params.minStepIntervalMs) return emptyList()
 
         val cadence = cadenceMs
-        val offRhythm = cadence != null && (dtMs < 0.5 * cadence || dtMs > 2.0 * cadence)
+        val tolerance = params.offRhythmTolerance
+        val offRhythm = cadence != null &&
+            (dtMs < (1 - tolerance) * cadence || dtMs > (1 + tolerance) * cadence)
         if (dtMs > params.maxStepIntervalMs || offRhythm) {
             breakStreak()
             return acceptCandidate(peakNs, null)
@@ -186,15 +243,33 @@ class StepDetectorNative(
         if (dtMs != null) {
             val c = cadenceMs
             cadenceMs = if (c == null) dtMs else 0.7 * c + 0.3 * dtMs
+
+            recentIntervalsMs.add(dtMs)
+            val cap = max(params.regularityRunLength - 1, RHYTHM_WINDOW_INTERVALS)
+            while (recentIntervalsMs.size > cap) recentIntervalsMs.removeAt(0)
         }
 
+        val rhythmic = runIsRhythmic()
+
+        // A confirmed run is re-examined on every candidate, which is the whole
+        // point. The previous version latched inConfirmedRun true after
+        // regularityRunLength candidates and never looked again.
         if (inConfirmedRun) {
-            totalSteps++
-            return listOf(peakNs)
+            if (rhythmic) {
+                totalSteps++
+                return listOf(peakNs)
+            }
+            // Fall back out of the run. Steps already counted are never
+            // retracted: a number that goes backwards is worse than one that
+            // is slightly too high.
+            inConfirmedRun = false
+            pending.clear()
+            pending.add(peakNs)
+            return emptyList()
         }
 
         pending.add(peakNs)
-        if (pending.size >= params.regularityRunLength) {
+        if (pending.size >= params.regularityRunLength && rhythmic) {
             val released = ArrayList(pending)
             pending.clear()
             inConfirmedRun = true
@@ -204,10 +279,70 @@ class StepDetectorNative(
         return emptyList()
     }
 
+    /**
+     * Whether the recent intervals look like walking rather than like motion
+     * that merely happens to be repetitive.
+     *
+     * At the minimum legal regularityRunLength of 2 there is only ever one
+     * interval, a coefficient of variation over which is meaningless, so the
+     * gate stands aside and regularityRunLength alone governs.
+     */
+    private fun runIsRhythmic(): Boolean {
+        val needed = params.regularityRunLength - 1
+        if (recentIntervalsMs.size < needed) return false
+        if (recentIntervalsMs.size < 2) return true
+        return intervalCv(recentIntervalsMs) <= params.maxIntervalCv
+    }
+
+    /**
+     * Coefficient of variation, computed in two passes.
+     *
+     * Two passes rather than RollingStats' sqrt(E[x^2] - mean^2) shortcut: this
+     * buffer holds at most eight elements so the cost is irrelevant, and the
+     * shortcut can produce a small negative variance from floating-point
+     * cancellation when the intervals are nearly identical - which is precisely
+     * the case for real walking. Dart and Kotlin must agree here to the last
+     * bit or the goldens diverge.
+     */
+    private fun intervalCv(xs: List<Double>): Double {
+        if (xs.size < 2) return 0.0
+        var sum = 0.0
+        for (x in xs) sum += x
+        val mean = sum / xs.size
+        if (mean <= 0) return 0.0
+        var sq = 0.0
+        for (x in xs) {
+            val d = x - mean
+            sq += d * d
+        }
+        return sqrt(sq / xs.size) / mean
+    }
+
+    /** Whether the gravity estimate currently looks like gravity. */
+    private fun gravityTrusted(): Boolean {
+        if (!hasGravity) return false
+        val m = sqrt(gvx * gvx + gvy * gvy + gvz * gvz)
+        return m >= GRAVITY_MIN && m <= GRAVITY_MAX
+    }
+
+    /**
+     * Fraction of recent movement lying along gravity rather than across it.
+     * Ratio of standard deviations, because the vertical channel carries
+     * gravity itself as a large constant offset that says nothing about
+     * movement.
+     */
+    fun verticalShare(): Double {
+        val v = verticalStats.stdDev()
+        val h = horizontalStats.stdDev()
+        val total = v + h
+        return if (total <= 0) 0.0 else v / total
+    }
+
     private fun breakStreak() {
         pending.clear()
         inConfirmedRun = false
         cadenceMs = null
+        recentIntervalsMs.clear()
     }
 
     fun debugSnapshot(): Map<String, Any?> = mapOf(
@@ -218,6 +353,8 @@ class StepDetectorNative(
         "pendingCandidates" to pending.size,
         "inConfirmedRun" to inConfirmedRun,
         "warmedUp" to (stats.count >= warmupSamples),
+        "intervalCv" to intervalCv(recentIntervalsMs),
+        "verticalShare" to if (gravityTrusted()) verticalShare() else null,
     )
 
     companion object {
@@ -227,5 +364,23 @@ class StepDetectorNative(
         const val WARMUP_SECONDS = 0.5
         const val SMOOTHING_SAMPLES = 5
         const val MAX_GAP_MS = 200
+
+        /**
+         * How many recent intervals the coefficient-of-variation gate judges.
+         * Deliberately larger than regularityRunLength - 1, and deliberately
+         * not tunable: how soon counting may start and how much evidence
+         * "still walking" requires are different questions.
+         */
+        const val RHYTHM_WINDOW_INTERVALS = 8
+
+        /**
+         * Single-pole gravity estimate smoothing, per sample. A literal, never
+         * derived from sampleRateHz - a constant computed from the sample rate
+         * is exactly what the two ports would round differently and drift
+         * apart on. ~0.24 Hz at the 50 Hz both ports run at.
+         */
+        const val GRAVITY_ALPHA = 0.03
+        const val GRAVITY_MIN = 8.0
+        const val GRAVITY_MAX = 11.5
     }
 }

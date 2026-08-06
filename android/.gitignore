@@ -12,3 +12,13 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# ...with one deliberate exception. sideload.jks signs the CI-built APK that
+# gets installed by hand on a phone, and it is committed on purpose: it grants
+# no secrecy, and the alternative was worse. Release builds used to be signed
+# with the debug key, which CI regenerates on every ephemeral runner, so no two
+# builds shared a signing identity and Android refused every update — each new
+# APK had to be installed over an uninstall, taking the step history with it.
+# A key that never changes is the entire point. Publishing to Play would need a
+# real secret-held key; this is not that.
+!sideload.jks

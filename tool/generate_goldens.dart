@@ -23,6 +23,31 @@ import '../test/fixtures/gait_fixtures.dart';
 
 const outputDir = 'android/app/src/test/resources/goldens';
 
+/// Fixtures whose whole point is the direction of the movement, not just its
+/// size. These are written with all six axes; everything else keeps the
+/// compact magnitude form. See GoldenFixture.parse.
+const axisFixtures = {'reject_jiggle', 'walk_then_jiggle', 'walk_arm_swing'};
+
+String motionCsv(String name, List<SensorSample> samples) {
+  final t0 = samples.first.tNs;
+  final withAxes = axisFixtures.contains(name);
+  final rows = StringBuffer(
+      withAxes ? 't_ms,ax,ay,az,gx,gy,gz\n' : 't_ms,accel_mag,gyro_mag\n');
+  for (final s in samples) {
+    final t = ((s.tNs - t0) / 1e6).toStringAsFixed(2);
+    if (withAxes) {
+      rows.writeln('$t,'
+          '${s.ax.toStringAsFixed(4)},${s.ay.toStringAsFixed(4)},'
+          '${s.az.toStringAsFixed(4)},${s.gx.toStringAsFixed(4)},'
+          '${s.gy.toStringAsFixed(4)},${s.gz.toStringAsFixed(4)}');
+    } else {
+      rows.writeln('$t,${s.accelMagnitude.toStringAsFixed(4)},'
+          '${s.gyroMagnitude.toStringAsFixed(4)}');
+    }
+  }
+  return rows.toString();
+}
+
 void main() {
   final cases = <String, List<SensorSample>>{
     'walk_normal': GaitFixtures.walk(steps: 60),
@@ -33,6 +58,20 @@ void main() {
     'reject_still': GaitFixtures.still(durationSeconds: 30),
     'reject_bursts': GaitFixtures.isolatedBursts(bursts: 8),
     'reject_shaking': GaitFixtures.shaking(durationSeconds: 20),
+    // Small movements of a phone held in the hand. Passes the motion floor,
+    // the amplitude floor and the gyro band by construction, so only the
+    // rhythm-quality and vertical-share gates can reject it.
+    'reject_jiggle': GaitFixtures.handJiggle(durationSeconds: 180),
+    // A real walk followed straight into jiggling, with no pause between. The
+    // regression test for the confirmed-run latch: the old detector counted
+    // right through the second half because the run was already confirmed.
+    'walk_then_jiggle': GaitFixtures.concat([
+      GaitFixtures.walk(steps: 60),
+      GaitFixtures.handJiggle(durationSeconds: 90),
+    ]),
+    // Walking with the phone in a swinging hand - the case that stops
+    // minVerticalShare from being set any higher than it is.
+    'walk_arm_swing': GaitFixtures.walkWithArmSwing(steps: 60),
   };
 
   // Activity goldens carry a barometer track, so they pin stairs detection as
@@ -58,13 +97,7 @@ void main() {
   final index = StringBuffer('# name,expected_steps\n');
 
   for (final entry in cases.entries) {
-    final rows = StringBuffer('t_ms,accel_mag,gyro_mag\n');
-    final t0 = entry.value.first.tNs;
-    for (final s in entry.value) {
-      rows.writeln('${((s.tNs - t0) / 1e6).toStringAsFixed(2)},'
-          '${s.accelMagnitude.toStringAsFixed(4)},'
-          '${s.gyroMagnitude.toStringAsFixed(4)}');
-    }
+    final rows = motionCsv(entry.key, entry.value);
 
     // Count from the rounded values that actually land on disk, not from the
     // full-precision originals. Otherwise the stored expectation describes data
@@ -81,13 +114,8 @@ void main() {
   for (final entry in activityCases.entries) {
     final (samples, pressure) = entry.value;
 
-    final motion = StringBuffer('t_ms,accel_mag,gyro_mag\n');
+    final motion = motionCsv(entry.key, samples);
     final t0 = samples.first.tNs;
-    for (final s in samples) {
-      motion.writeln('${((s.tNs - t0) / 1e6).toStringAsFixed(2)},'
-          '${s.accelMagnitude.toStringAsFixed(4)},'
-          '${s.gyroMagnitude.toStringAsFixed(4)}');
-    }
 
     final baro = StringBuffer();
     for (final p in pressure) {

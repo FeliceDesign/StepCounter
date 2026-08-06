@@ -155,6 +155,9 @@ data class CalibrationParams(
     val minStepIntervalMs: Int = 250,
     val maxStepIntervalMs: Int = 2000,
     val regularityRunLength: Int = 4,
+    val offRhythmTolerance: Double = 0.35,
+    val maxIntervalCv: Double = 0.15,
+    val minVerticalShare: Double = 0.45,
     val gyroMinLevel: Double = 0.03,
     val gyroMaxLevel: Double = 5.0,
 ) {
@@ -165,6 +168,9 @@ data class CalibrationParams(
         minStepIntervalMs = minStepIntervalMs.coerceIn(180, 400),
         maxStepIntervalMs = maxStepIntervalMs.coerceIn(1000, 2500),
         regularityRunLength = regularityRunLength.coerceIn(2, 8),
+        offRhythmTolerance = offRhythmTolerance.coerceIn(0.15, 1.0),
+        maxIntervalCv = maxIntervalCv.coerceIn(0.08, 1.0),
+        minVerticalShare = minVerticalShare.coerceIn(0.0, 0.9),
         gyroMinLevel = gyroMinLevel.coerceIn(0.0, 0.5),
         gyroMaxLevel = gyroMaxLevel.coerceIn(1.0, 8.0),
     )
@@ -176,6 +182,9 @@ data class CalibrationParams(
         "minStepIntervalMs" to minStepIntervalMs,
         "maxStepIntervalMs" to maxStepIntervalMs,
         "regularityRunLength" to regularityRunLength,
+        "offRhythmTolerance" to offRhythmTolerance,
+        "maxIntervalCv" to maxIntervalCv,
+        "minVerticalShare" to minVerticalShare,
         "gyroMinLevel" to gyroMinLevel,
         "gyroMaxLevel" to gyroMaxLevel,
     )
@@ -190,6 +199,9 @@ data class CalibrationParams(
             minStepIntervalMs = num(m["minStepIntervalMs"], FACTORY.minStepIntervalMs.toDouble()).toInt(),
             maxStepIntervalMs = num(m["maxStepIntervalMs"], FACTORY.maxStepIntervalMs.toDouble()).toInt(),
             regularityRunLength = num(m["regularityRunLength"], FACTORY.regularityRunLength.toDouble()).toInt(),
+            offRhythmTolerance = num(m["offRhythmTolerance"], FACTORY.offRhythmTolerance),
+            maxIntervalCv = num(m["maxIntervalCv"], FACTORY.maxIntervalCv),
+            minVerticalShare = num(m["minVerticalShare"], FACTORY.minVerticalShare),
             gyroMinLevel = num(m["gyroMinLevel"], FACTORY.gyroMinLevel),
             gyroMaxLevel = num(m["gyroMaxLevel"], FACTORY.gyroMaxLevel),
         ).clamped()

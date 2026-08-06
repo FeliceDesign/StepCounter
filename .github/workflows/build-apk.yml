@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - claude/flutter-android-step-counter-lmer7x
+      - claude/**
 
 concurrency:
   group: build-apk-${{ github.ref }}
@@ -38,10 +38,15 @@ jobs:
       - name: Test
         run: flutter test
 
-      # Release build, signed with the debug key so the APK installs without
-      # any keystore secrets in CI. See android/app/build.gradle.kts.
+      # Signed with the committed sideload keystore, so consecutive builds share
+      # a signing identity and install over each other. See
+      # android/app/build.gradle.kts for why that key is in the repo.
+      #
+      # --build-number drives versionCode. pubspec pins `1.0.0+1`, so without
+      # this every APK claimed version 1 and Android had no reason to treat a
+      # newer build as an upgrade. The run number is monotonic per repository.
       - name: Build release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --build-number=${{ github.run_number }}
 
       # Runs after the Flutter build because that is what injects the Gradle
       # wrapper and local.properties into android/.

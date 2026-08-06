@@ -90,8 +90,49 @@ void main() {
   test('rejection goldens really do expect zero', () {
     for (final file in files.where((f) => f.path.contains('reject_'))) {
       final name = file.uri.pathSegments.last.replaceAll('.csv', '');
+      // Hand jiggle is the one negative that is not held to exactly zero; it
+      // has its own budgeted test below.
+      if (name == 'reject_jiggle') continue;
       final golden = GoldenFixture.parse(name, file.readAsStringSync());
       expect(golden.expectedSteps, 0, reason: '$name should count nothing');
     }
   });
+
+  /// Sustained fidgeting with a phone in the hand is the hardest negative the
+  /// detector faces, because it is genuine movement at genuine gait frequency
+  /// and amplitude. It gets a budget rather than an equality — but a small one,
+  /// and the point of the number is what it used to be. Before the
+  /// rhythm-quality and vertical-share gates this fixture scored 278.
+  test('three minutes of hand jiggle is almost entirely rejected', () {
+    final golden = _load(files, 'reject_jiggle');
+    expect(golden.expectedSteps, lessThanOrEqualTo(15));
+    expect(
+      StepDetector.countSteps(golden.samples),
+      golden.expectedSteps,
+      reason: 'the stored expectation must match a live replay',
+    );
+  });
+
+  /// The regression test for the confirmed-run latch.
+  ///
+  /// The old detector counted straight through the second half of this
+  /// fixture: the walk had already flipped the run to confirmed, and nothing
+  /// ever re-checked it, so 60 real steps came out as 204.
+  test('a confirmed walk does not license counting through jiggle', () {
+    final golden = _load(files, 'walk_then_jiggle');
+    expect(golden.expectedSteps, inInclusiveRange(55, 80));
+  });
+
+  /// The case that keeps [CalibrationParams.minVerticalShare] at 0.45 rather
+  /// than the 0.55 the tidier fixtures would allow: walking with the phone in
+  /// a swinging hand puts a large horizontal component on top of the gait
+  /// signal, and at 0.55 this drops to zero steps.
+  test('walking with the phone in a swinging hand is still counted', () {
+    expect(_load(files, 'walk_arm_swing').expectedSteps, greaterThanOrEqualTo(50));
+  });
+}
+
+GoldenFixture _load(List<File> files, String name) {
+  final file = files.firstWhere((f) => f.path.endsWith('$name.csv'));
+  return GoldenFixture.parse(name, file.readAsStringSync());
 }

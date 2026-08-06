@@ -25,11 +25,25 @@ class GoldenFixture {
 
   final List<PressureSample> pressure;
 
-  /// Rebuilds samples from stored magnitudes.
+  /// Rebuilds samples from a golden file.
   ///
-  /// The magnitudes are placed on a single axis each. The detector only ever
-  /// looks at sqrt(x^2+y^2+z^2), so this is exactly equivalent to the original
-  /// three-axis data as far as the algorithm is concerned.
+  /// Two column layouts are accepted, and which one a fixture uses is a real
+  /// decision rather than a historical accident:
+  ///
+  ///   `t_ms,accel_mag,gyro_mag`            - three columns
+  ///   `t_ms,ax,ay,az,gx,gy,gz`             - seven columns
+  ///
+  /// The three-column form was the only one that existed while every gate read
+  /// the orientation-free magnitude, and it is still what most fixtures need:
+  /// it is a third of the size and the magnitudes are all the algorithm looked
+  /// at. Its axes are reconstructed onto x alone.
+  ///
+  /// That reconstruction stopped being harmless once the detector gained the
+  /// vertical-share gate. With everything on one axis the gravity estimate
+  /// lines up with that axis and the vertical share is identically 1, so a
+  /// three-column fixture cannot exercise the gate at all — it would pass
+  /// trivially in both languages and pin nothing. Fixtures that exist to hold
+  /// that gate in place therefore store all seven columns.
   static GoldenFixture parse(
     String name,
     String contents, {
@@ -54,6 +68,19 @@ class GoldenFixture {
       if (line.startsWith('t_ms')) continue;
 
       final parts = line.split(',');
+      if (parts.length >= 7) {
+        samples.add(SensorSample(
+          tNs: (double.parse(parts[0]) * 1e6).round(),
+          ax: double.parse(parts[1]),
+          ay: double.parse(parts[2]),
+          az: double.parse(parts[3]),
+          gx: double.parse(parts[4]),
+          gy: double.parse(parts[5]),
+          gz: double.parse(parts[6]),
+          hasGyro: true,
+        ));
+        continue;
+      }
       if (parts.length < 3) continue;
       samples.add(SensorSample(
         tNs: (double.parse(parts[0]) * 1e6).round(),
