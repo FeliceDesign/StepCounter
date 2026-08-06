@@ -77,6 +77,13 @@ class Diagnostics {
   double get threshold => (raw['threshold'] as num?)?.toDouble() ?? 0;
   bool get inConfirmedRun => raw['inConfirmedRun'] == true;
 
+  /// Coefficient of variation of the recent step intervals, and the share of
+  /// recent movement lying along gravity. The two gates that reject hand
+  /// movement; null vertical share means the gravity estimate is not currently
+  /// trustworthy and that gate is standing aside.
+  double get intervalCv => (raw['intervalCv'] as num?)?.toDouble() ?? 0;
+  double? get verticalShare => (raw['verticalShare'] as num?)?.toDouble();
+
   Activity get activity => Activity.fromId(raw['activity'] as String? ?? 'unknown');
   double get altitudeRate => (raw['altitudeRate'] as num?)?.toDouble() ?? 0;
 }

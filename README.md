@@ -18,7 +18,8 @@ without `HIGH_SAMPLING_RATE_SENSORS`.
 
 ```
 accel magnitude → band-pass 0.5–3 Hz → smooth → adaptive threshold
-   → peak/valley pairing → temporal gate → regularity gate → gyro gate
+   → peak/valley pairing → vertical-share gate → gyro gate
+   → temporal gates → rhythm-quality gate
 ```
 
 1. **Magnitude**, `√(x²+y²+z²)`, not any single axis — so the detector is
@@ -41,13 +42,39 @@ accel magnitude → band-pass 0.5–3 Hz → smooth → adaptive threshold
 5. **Peak/valley pairing** with a minimum valley-to-peak amplitude.
 6. **Temporal gate** rejects intervals under 250 ms — faster than that is a
    bounce within one footfall, not a second step.
-7. **Regularity gate** requires four consecutive rhythmic candidates before
-   counting any of them. This is the primary false-positive defence: gesturing
-   or pulling the phone out of a pocket produces one or two peaks, never four
-   evenly spaced ones. A continuous walk pays this warm-up only once.
+7. **Vertical-share gate.** A single-pole estimate of the gravity vector
+   splits acceleration into a component along gravity and one across it; the
+   movement must be mostly along. This is the only stage that looks at
+   *direction*, and it exists because taking the magnitude in step 1 is exactly
+   what throws that information away. Walking drives the body up and down
+   whatever pocket the phone is in; a hand fidgeting with it moves mostly
+   sideways. Measured: walking 0.98, hand jiggle never above 0.46.
+
+   Orientation independence survives — the detector still never needs to know
+   the device's pose, only that gravity is *estimable*. When the estimate stops
+   looking like gravity the gate is skipped rather than failed, exactly as the
+   gyro gate is skipped on a device with no gyroscope.
 8. **Gyroscope gate** rejects motion with no rotation — road vibration in a
    vehicle produces gait-like acceleration peaks with almost no rotational
    energy, and it is the largest source of phantom steps in naive pedometers.
+9. **Rhythm-quality gate.** A run starts after `regularityRunLength`
+   consecutive rhythmic candidates, and *continues only while the last eight
+   step intervals hold together* — a coefficient of variation under
+   `maxIntervalCv`. Steady gait sits at 0.010–0.027; hand movement at
+   0.04–0.16.
+
+   The re-checking is the point. This gate used to latch: four candidates
+   flipped the run to confirmed and every peak thereafter counted
+   unconditionally, forever. It was described as the primary false-positive
+   defence and was not one — it gated entry and nothing else, so anything that
+   could look rhythmic for two seconds counted freely from then on. Three
+   minutes of fidgeting with a phone in hand scored 278 steps.
+
+   The window over which rhythm is judged is deliberately longer than
+   `regularityRunLength` and deliberately not tunable. How soon counting may
+   *start* is a latency the user feels; how much evidence "still walking"
+   requires is a different question, and over three intervals a coefficient of
+   variation is a weak statistic that four accidentally-similar fidgets satisfy.
 
 The gyroscope is measured as a **raw magnitude level, not band-passed**.
 Rotation about one axis makes `|ω|` a rectified sine at twice the gait
@@ -57,19 +84,34 @@ cleanly: ~0.004 rad/s in a vehicle, ~0.2–0.5 walking, ~10 shaking the phone.
 
 ### What it cannot do
 
-Sustained motion that is rhythmic *at gait frequency and gait amplitude* is not
-separable from walking by these means. Measured over the detector's window,
-sustained non-gait motion reaches a deviation of 0.52 while genuinely damped
-walking — a phone loose in a bag — sits at 0.57. They overlap, and no constant
-threshold divides them.
+Sustained motion that is rhythmic *at gait frequency, gait amplitude and in the
+vertical direction* is not separable from walking by these means. The magnitude
+channel alone cannot do it at all: sustained non-gait motion reaches a deviation
+of 0.52 while genuinely damped walking — a phone loose in a bag — sits at 0.57,
+and no constant threshold divides them. The vertical-share gate separates the
+common case, hand movement, because that is mostly horizontal. Something shaken
+rhythmically up and down would still count.
+
+There is a real cost, and it is measured rather than hand-waved: walking with
+the phone in a *swinging hand* puts a large horizontal component at half the
+step frequency on top of the gait signal, which drags the vertical share to
+around 0.45. That is why `minVerticalShare` defaults to 0.45 and not the 0.55
+the tidier fixtures would allow — at 0.55 a hard arm swing stops being counted
+entirely, 60 real steps becoming 0. The fixture `walk_arm_swing` holds that line.
 
 An autocorrelation-based periodicity gate was tried and removed: it did suppress
 irregular motion, but it also cost a quarter of every run, and its effect turned
 out to come from instability in the cadence estimate rather than from measuring
 periodicity as intended. A gate whose mechanism is not the one claimed is worse
-than no gate.
+than no gate. The coefficient-of-variation gate in step 9 is the cheap, honest
+version of the same idea — O(1), no extra state beyond the intervals, and it
+measures what it claims to.
 
-The tool that does address this case is per-user calibration against the
+An amplitude-similarity gate was implemented and removed for the same reason:
+ablated on the fixture corpus it cost a real step and bought a 3% reduction in
+phantom ones.
+
+The tool that addresses whatever remains is per-user calibration against the
 hardware pedometer, which supplies a real error signal instead of a guess.
 
 ## Activity detection
@@ -138,12 +180,33 @@ Guardrails on both paths:
 - the search must have actually moved and the baseline error must be non-zero,
   otherwise an already-perfect baseline satisfies `0 ≤ 0 × 0.98` and the app
   adopts an identical set while reporting an improvement;
-- automatic adoption additionally needs six labelled windows;
+- automatic adoption additionally needs six labelled windows, and the manual
+  path needs three. The manual path used to need none, which let it "accept" an
+  improvement measured against the very walk it had just been fitted to;
 - improvement must exceed 2% relative, since churning for noise makes the app
-  feel unpredictable.
+  feel unpredictable;
+- **a trust region** bounds how far one calibration may move a parameter — 35%
+  of that parameter's legal range — plus a small penalty on distance from where
+  the search started, so a marginal error win cannot buy a wild move. Round 0
+  used to sweep the entire legal range of every field, which is what made
+  proposals look extreme, and extreme proposals are the ones a user cannot
+  judge.
+
+The trust region and the factory restart have to coexist, and the way they do
+is worth stating: **each seed carries its own anchor.** The current-seeded pass
+is bounded around wherever the user is now; the factory-seeded pass is bounded
+around the factory vector. So the neighbourhood of the defaults is always
+reachable in a single adoption however far the incumbent has drifted. What is
+bounded is large moves toward nowhere in particular, never the route home.
+
+Regularisation shapes only what the search *proposes*. The errors reported to
+the user, and the ones the adoption decision is made on, stay unregularised —
+a number labelled "how wrong will the app be" has to mean that and nothing else.
 
 Every adopted set is stored as a version, so a bad calibration is always
-traceable and reversible.
+traceable and reversible. Every recorded walk is kept too, with what the app
+counted beside what you counted and what Android counted, under
+Settings → Calibration and test results.
 
 ## Architecture
 

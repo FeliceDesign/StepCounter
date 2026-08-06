@@ -4,7 +4,7 @@ import '../app_scope.dart';
 import '../detection/calibration_params.dart';
 import '../services/native_bridge.dart';
 import '../services/permissions.dart';
-import 'calibration_screen.dart';
+import 'calibration_history_screen.dart';
 import 'reset_sheet.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -25,12 +25,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Reads AppScope, so it cannot run from initState.
     if (_loadedOnce) return;
     _loadedOnce = true;
-    _loadDiagnostics();
+    _refresh();
   }
 
-  Future<void> _loadDiagnostics() async {
-    final d = await AppScope.of(context).bridge.diagnostics();
-    if (mounted) setState(() => _diagnostics = d);
+  ({int manual, int automatic})? _counts;
+
+  int get _totalSessions =>
+      (_counts?.manual ?? 0) + (_counts?.automatic ?? 0);
+
+  Future<void> _refresh() async {
+    final scope = AppScope.of(context);
+    final d = await scope.bridge.diagnostics();
+    // The corpus size comes from the database, never from
+    // Diagnostics.autoWindowCount: that counts files in the native staging
+    // directory, which Dart drains destructively as soon as the UI attaches.
+    // It is a queue depth, and reading it as a corpus size showed "0 windows
+    // collected" no matter how many walks had been collected.
+    final counts = await scope.repository.sessionCountsBySource();
+    if (mounted) {
+      setState(() {
+        _diagnostics = d;
+        _counts = counts;
+      });
+    }
+  }
+
+  String _calibrationSummary() {
+    final c = _counts;
+    if (c == null) return 'Loading…';
+    if (c.manual + c.automatic == 0) {
+      return 'No saved walks yet — run a test to see how close the app is.';
+    }
+    final parts = <String>[
+      '${c.manual} ${c.manual == 1 ? 'test' : 'tests'}',
+      '${c.automatic} collected automatically',
+    ];
+    return parts.join(', ');
   }
 
   @override
@@ -59,7 +89,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 } else {
                   await scope.bridge.stopService();
                 }
-                await _loadDiagnostics();
+                await _refresh();
               },
             ),
             ListTile(
@@ -70,15 +100,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
 
             _Section('Calibration'),
+            // The two things a user actually wants — run a test, look at what
+            // past tests said — sit at the top; the machinery goes under
+            // Advanced. Before, a toggle, a wizard, a batch job and a raw
+            // parameter slider sat as four peers at identical visual weight,
+            // with nothing to say which to reach for or what state calibration
+            // was even in.
+            ListTile(
+              leading: const Icon(Icons.tune),
+              title: const Text('Calibration and test results'),
+              subtitle: Text(_calibrationSummary()),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                // The builder's context is not this State's, so it is resolved
+                // up front rather than reached for after the await.
+                final navigator = Navigator.of(context);
+                await navigator.push(MaterialPageRoute(
+                  builder: (_) => const CalibrationHistoryScreen(),
+                ));
+                await _refresh();
+              },
+            ),
             SwitchListTile(
               title: const Text('Automatic calibration'),
               subtitle: Text(
                 _diagnostics?.hasHardwareCounter == false
                     ? 'Unavailable — this device has no built-in step sensor '
                         'to compare against.'
-                    : 'Quietly grades the detector against the phone’s '
-                        'built-in step sensor and retunes when it finds a real '
-                        'improvement.',
+                    : scope.settings.autoCalibrationEnabled
+                        ? 'Saves a short walk in the background now and then and '
+                            'grades it against the phone’s own step sensor. '
+                            '${_counts?.automatic ?? 0} collected so far.'
+                        : 'Not collecting. Your saved tests are still used.',
               ),
               value: scope.settings.autoCalibrationEnabled,
               onChanged: _diagnostics?.hasHardwareCounter == false
@@ -87,42 +140,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       await scope.settings.setAutoCalibrationEnabled(v);
                       await scope.bridge.setAutoCalibration(v);
                       if (v) await Permissions.requestActivityRecognition();
-                      await _loadDiagnostics();
+                      await _refresh();
                     },
             ),
-            ListTile(
-              leading: const Icon(Icons.tune),
-              title: const Text('Test & Recalibrate'),
-              subtitle: const Text(
-                'Walk a known number of steps and compare.',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () async {
-                // The builder's context is not this State's, so both are
-                // resolved up front rather than reached for after the await.
-                final navigator = Navigator.of(context);
-                final messenger = ScaffoldMessenger.of(context);
-                final applied = await navigator.push<bool>(
-                  MaterialPageRoute(builder: (_) => const CalibrationScreen()),
-                );
-                if (applied == true) {
-                  messenger.showSnackBar(
-                    const SnackBar(content: Text('Calibration applied')),
-                  );
-                }
-                await _loadDiagnostics();
-              },
+            ExpansionTile(
+              leading: const Icon(Icons.settings_suggest_outlined),
+              title: const Text('Advanced'),
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.auto_fix_high),
+                  title: const Text('Retune from saved walks'),
+                  subtitle: Text(
+                    _totalSessions == 0
+                        ? 'No saved walks yet.'
+                        : 'Re-runs the optimiser over all $_totalSessions saved '
+                            '${_totalSessions == 1 ? 'walk' : 'walks'}.',
+                  ),
+                  onTap: _running || _totalSessions == 0 ? null : _runAutomatic,
+                ),
+                _SensitivityTile(onChanged: _refresh),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.auto_fix_high),
-              title: const Text('Recalibrate now'),
-              subtitle: Text(
-                'Uses the ${_diagnostics?.autoWindowCount ?? 0} windows '
-                'collected automatically plus your saved tests.',
-              ),
-              onTap: _running ? null : _runAutomatic,
-            ),
-            _SensitivityTile(onChanged: _loadDiagnostics),
 
             _Section('Reliability'),
             if (_diagnostics?.ignoringBatteryOptimizations == false)
@@ -138,7 +176,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   await AppScope.of(context)
                       .bridge
                       .requestIgnoreBatteryOptimizations();
-                  await _loadDiagnostics();
+                  await _refresh();
                 },
               ),
             if (_diagnostics?.hasBarometer == false)
@@ -152,7 +190,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             _DiagnosticsTile(
               diagnostics: _diagnostics,
-              onRefresh: _loadDiagnostics,
+              onRefresh: _refresh,
             ),
 
             _Section('Data'),
@@ -166,7 +204,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               onTap: () async {
                 await showResetSheet(context);
-                await _loadDiagnostics();
+                await _refresh();
               },
             ),
             const SizedBox(height: 24),
@@ -194,7 +232,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
-    await _loadDiagnostics();
+    await _refresh();
   }
 
   Future<void> _editGoal(int current) async {
@@ -238,16 +276,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
 /// to its maximum only cut phantom steps from 144 to 32. This one is an
 /// absolute floor on how much movement must be present at all, which is what
 /// actually silences a phone sitting on a desk.
-class _SensitivityTile extends StatelessWidget {
+class _SensitivityTile extends StatefulWidget {
   const _SensitivityTile({required this.onChanged});
 
   final VoidCallback onChanged;
 
   @override
+  State<_SensitivityTile> createState() => _SensitivityTileState();
+}
+
+class _SensitivityTileState extends State<_SensitivityTile> {
+  double? _dragValue;
+
+  @override
   Widget build(BuildContext context) {
     final repo = AppScope.of(context).repository;
     final (lo, hi) = CalibrationParams.bounds['minMotionSigma']!;
-    final value = repo.params.minMotionSigma.clamp(lo, hi);
+    // While a drag is in progress the thumb follows the finger from local
+    // state; the write happens once, on release. `onChanged` used to be empty,
+    // so the thumb stayed put until the finger lifted and then jumped.
+    final value = _dragValue ?? repo.params.minMotionSigma.clamp(lo, hi);
 
     return ListTile(
       title: const Text('Strictness'),
@@ -268,13 +316,17 @@ class _SensitivityTile extends StatelessWidget {
             max: hi,
             divisions: 18,
             label: value.toStringAsFixed(2),
-            onChanged: (v) {},
+            onChanged: (v) => setState(() => _dragValue = v),
             onChangeEnd: (v) async {
+              setState(() => _dragValue = null);
+              // A nudge that lands back where it started should not append a
+              // calibration version; the history is meant to record decisions.
+              if ((v - repo.params.minMotionSigma).abs() < 1e-6) return;
               await repo.adoptParams(
                 repo.params.copyWith(minMotionSigma: v),
                 source: 'manual-slider',
               );
-              onChanged();
+              widget.onChanged();
             },
           ),
         ],
@@ -327,7 +379,7 @@ class _DiagnosticsTile extends StatelessWidget {
                 _Row('Battery exemption',
                     d.ignoringBatteryOptimizations ? 'granted' : 'not granted'),
                 const Divider(),
-                _Row('Auto-calibration windows', '${d.autoWindowCount}'),
+                _Row('Recordings awaiting import', '${d.autoWindowCount}'),
                 _Row('Steps awaiting sync', '${d.pendingSteps}'),
                 _Row('Currently walking', d.inConfirmedRun ? 'yes' : 'no'),
                 _Row(
@@ -337,9 +389,20 @@ class _DiagnosticsTile extends StatelessWidget {
                       : '${(60000 / d.cadenceMs!).round()} steps/min',
                 ),
                 _Row('Rotation level', d.gyroLevel.toStringAsFixed(3)),
+                // The two gates that reject hand movement, exposed so they can
+                // be watched on a real phone rather than taken on trust.
+                // Walking sits near 0.98 vertical and under 0.03 variation;
+                // fidgeting sits under 0.46 and well above 0.04.
+                _Row(
+                  'Movement is vertical',
+                  d.verticalShare == null
+                      ? '— (gravity unclear)'
+                      : d.verticalShare!.toStringAsFixed(2),
+                ),
+                _Row('Step rhythm variation', d.intervalCv.toStringAsFixed(3)),
                 _Row('Activity', d.activity.label),
                 _Row('Vertical speed',
-                    '\${d.altitudeRate.toStringAsFixed(2)} m/s'),
+                    '${d.altitudeRate.toStringAsFixed(2)} m/s'),
               ],
             ),
           ),

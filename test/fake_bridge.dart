@@ -95,14 +95,24 @@ class FakeNativeBridge extends NativeBridge {
   @override
   Future<void> startRecording() async => recording = true;
 
+  /// What the fake service reports for the recording's duration, and for
+  /// Android's own count across it. Null means the hardware counter had not
+  /// settled — the case the UI has to render honestly rather than as a zero.
+  int recordingDurationMs = 30000;
+  int? hardwareDelta;
+
   @override
   Future<Recording> stopRecording() async {
     recording = false;
     return Recording(
       samples: recordingResult,
       pressureSamples: recordingPressureResult,
+      durationMs: recordingDurationMs,
     );
   }
+
+  @override
+  Future<int?> recordingHardwareDelta() async => hardwareDelta;
 
   @override
   Future<void> setTodayTotal(int total) async => todayTotalPushed = total;

@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,7 +14,9 @@ import 'package:stepcounter/detection/calibration_params.dart';
 import 'package:stepcounter/detection/sensor_sample.dart';
 import 'package:stepcounter/ui/home_screen.dart';
 import 'package:stepcounter/ui/activity_palette.dart';
+import 'package:stepcounter/ui/calibration_history_screen.dart';
 import 'package:stepcounter/ui/reset_sheet.dart';
+import 'package:stepcounter/ui/settings_screen.dart';
 
 import 'fake_bridge.dart';
 import 'fixtures/gait_fixtures.dart';
@@ -424,4 +429,78 @@ void main() {
       expect((await repo.allSessions()).length, 1);
     });
   });
+
+  group('calibration results', () {
+    Future<int> addSession(
+      String source, {
+      required int detected,
+      int? userSteps,
+      int? hardwareSteps,
+    }) =>
+        db.insertSession(CalibrationSessionsCompanion.insert(
+          recordedAt: DateTime.now().millisecondsSinceEpoch,
+          durationMs: 64000,
+          actualSteps: userSteps ?? hardwareSteps ?? detected,
+          detectedSteps: detected,
+          source: source,
+          samples: Uint8List.fromList([1, 2, 3, 4]),
+          userSteps: Value(userSteps),
+          hardwareSteps: Value(hardwareSteps),
+        ));
+
+    testWidgets('a manual test shows both deviations', (tester) async {
+      await addSession('manual', detected: 118, userSteps: 120, hardwareSteps: 121);
+
+      await tester.pumpWidget(wrap(const CalibrationHistoryScreen()));
+      // Not pumpAndSettle: the screen holds an open drift query stream, which
+      // never reaches a quiescent state for it to settle into.
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.text('118'), findsOneWidget); // what the app counted
+      expect(find.text('120'), findsOneWidget); // what the user counted
+      expect(find.text('121'), findsOneWidget); // what Android counted
+      // Signed, and with a percentage because both references clear the
+      // hundred-step floor below which a percentage is just noise.
+      expect(find.textContaining('-2 ·'), findsOneWidget);
+      expect(find.textContaining('-3 ·'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('a missing reference reads as absent, never as zero',
+        (tester) async {
+      // An automatic window has no user count. Rendering that as "0" would
+      // claim the user counted nothing, and a 100% deviation with it.
+      await addSession('automatic', detected: 44, hardwareSteps: 46);
+
+      await tester.pumpWidget(wrap(const CalibrationHistoryScreen()));
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.text('—'), findsOneWidget);
+      expect(find.text('44'), findsOneWidget);
+      expect(find.text('46'), findsOneWidget);
+      await unmount(tester);
+    });
+
+    testWidgets('the saved-walk count comes from the database, not the '
+        'native staging directory', (tester) async {
+      // The direct regression test for "0 collected windows". The native
+      // directory is drained as soon as the UI attaches, so a count read from
+      // it was always zero however many walks had been collected.
+      bridge.diagnosticsPayload = const {
+        // The staging directory is empty, as it almost always is.
+        'autoWindowCount': 0,
+        'hasHardwareCounter': true,
+      };
+      for (var i = 0; i < 3; i++) {
+        await addSession('automatic', detected: 40 + i, hardwareSteps: 41 + i);
+      }
+
+      await tester.pumpWidget(wrap(const SettingsScreen()));
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.textContaining('3 collected automatically'), findsWidgets);
+      await unmount(tester);
+    });
+  });
+
 }

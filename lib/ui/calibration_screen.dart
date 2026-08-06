@@ -37,6 +37,11 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
 
   Recording? _recorded;
   int _detected = 0;
+
+  /// Android's own count over the same recording, when it can be had. See
+  /// StepSensorService.recordingHardwareDelta for why it is not always
+  /// available at the moment recording stops.
+  int? _hardwareSteps;
   final _actualController = TextEditingController();
 
   /// What the user says they are about to do. Stored with the recording so the
@@ -139,13 +144,25 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
       _error = null;
     });
 
-    final repo = AppScope.of(context).repository;
+    final scope = AppScope.of(context);
+    final repo = scope.repository;
+
+    // Asked now rather than at stopRecording: the hardware counter reports
+    // late, and the seconds the user spent typing their own count are exactly
+    // the settling time it needed.
+    final hardware = await scope.bridge.recordingHardwareDelta();
+
     await repo.saveManualSession(
       samples: _recorded!.samples,
       pressureSamples: _recorded!.pressureSamples,
       actualSteps: actual,
-      durationMs: _elapsedSeconds * 1000,
+      // Measured by the service across the whole recording. The visible timer
+      // excluded the warm-up countdown and was therefore always short.
+      durationMs: _recorded!.durationMs > 0
+          ? _recorded!.durationMs
+          : _elapsedSeconds * 1000,
       declaredActivity: _declared,
+      hardwareSteps: hardware,
     );
 
     final outcome = await repo.runCalibration();
@@ -154,6 +171,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     if (!mounted) return;
     setState(() {
       _busy = false;
+      _hardwareSteps = hardware;
       _outcome = outcome;
       _activityOutcome = activityOutcome;
       _stage = _Stage.result;
@@ -346,137 +364,173 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     );
   }
 
+  /// The test result, with retuning as a genuinely optional aside.
+  ///
+  /// The previous version stacked three full sections — the walk, a proposed
+  /// change, and activity recognition — above a Discard/Apply pair, which read
+  /// as a screen built to talk you into recalibrating. It also offered "Apply"
+  /// whenever the search had *moved*, which is not the same as having found
+  /// something worth adopting, so the button could sit enabled directly under
+  /// a note saying no change was worth making.
+  ///
+  /// Now the result is the subject. A tuning suggestion appears only when the
+  /// optimiser actually accepted one, and declining is the ordinary path
+  /// rather than the discouraged one.
   Widget _buildResult() {
     final theme = Theme.of(context);
-    final outcome = _outcome;
-    final actual = int.tryParse(_actualController.text.trim()) ?? 0;
-    final errorPercent =
-        actual == 0 ? 0.0 : ((_detected - actual).abs() / actual) * 100;
+    final entered = int.tryParse(_actualController.text.trim()) ?? 0;
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('This walk', style: theme.textTheme.titleLarge),
+          Text('Test result', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 16),
+          _ComparisonRow(
+            label: 'This app counted',
+            value: '$_detected',
+            emphasised: true,
+          ),
+          _ComparisonRow(
+            label: 'You counted',
+            value: '$entered',
+            delta: _deltaText(_detected, entered),
+          ),
+          _ComparisonRow(
+            label: 'Android counted',
+            value: _hardwareSteps?.toString() ?? 'not available',
+            delta: _deltaText(_detected, _hardwareSteps),
+          ),
           const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _Metric(label: 'You counted', value: '$actual'),
-              _Metric(label: 'App counted', value: '$_detected'),
-              _Metric(
-                label: 'Off by',
-                value: '${errorPercent.toStringAsFixed(1)}%',
-              ),
-            ],
+          Text(
+            _hardwareSteps == null
+                ? 'Saved with your other results. Android’s own count was not '
+                    'available for this walk — its step sensor reports late, '
+                    'and it had not caught up.'
+                : 'Saved with your other results.',
+            style: theme.textTheme.bodySmall,
           ),
-          const Divider(height: 40),
-          if (outcome == null)
-            Text(
-              'Not enough data to retune yet. The recording has been saved and '
-              'will be used next time.',
-              style: theme.textTheme.bodyMedium,
-            )
-          else ...[
-            Text('Proposed change', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 24),
+          _tuningSection(theme),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: _canApply
+                ? OutlinedButton(
+                    onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+                    child: const Text('Keep current settings'),
+                  )
+                : FilledButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Done'),
+                  ),
+          ),
+          if (_canApply) ...[
             const SizedBox(height: 8),
-            Text(
-              'Measured across ${outcome.sessionCount} stored '
-              '${outcome.sessionCount == 1 ? 'session' : 'sessions'}.',
-              style: theme.textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _Metric(
-                  label: 'Error now',
-                  value: _pct(outcome.baselineHoldoutError),
-                ),
-                _Metric(
-                  label: 'Error after',
-                  value: _pct(outcome.holdoutError),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (!outcome.validated)
-              _Note(
-                icon: Icons.info_outline,
-                text: 'Only one or two sessions are stored, so this improvement '
-                    'is measured on the same data it was tuned to. Record a few '
-                    'more walks for an independent check.',
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: _busy ? null : _accept,
+                child: const Text('Apply retuning'),
               ),
-            if (!outcome.accepted && outcome.validated)
-              const _Note(
-                icon: Icons.check_circle_outline,
-                text: 'No change worth making — the current settings already '
-                    'handle your walking well.',
-              ),
-            const SizedBox(height: 12),
-            _ParamDiff(
-              before: outcome.baselineParams,
-              after: outcome.params,
             ),
           ],
-          if (_activityOutcome != null) ...[
-            const Divider(height: 40),
-            Text('Activity recognition', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _Metric(
-                  label: 'Correct now',
-                  value: '\${(_activityOutcome!.baselineAccuracy * 100).round()}%',
-                ),
-                _Metric(
-                  label: 'Correct after',
-                  value: '\${(_activityOutcome!.accuracy * 100).round()}%',
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _activityOutcome!.accepted
-                  ? 'Applying this will also retune how walking, running and '
-                      'stairs are told apart.'
-                  : 'Activity recognition is already as good as these '
-                      'recordings can show — no change proposed.',
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
-          const SizedBox(height: 28),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Discard'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton(
-                  onPressed: _busy || !_hasSomethingToApply ? null : _accept,
-                  child: const Text('Apply'),
-                ),
-              ),
-            ],
-          ),
         ],
       ),
     );
   }
 
-  /// True when either optimiser actually proposes a change.
-  bool get _hasSomethingToApply {
-    final o = _outcome;
-    final a = _activityOutcome;
-    final stepChange = o != null && o.params != o.baselineParams;
-    final activityChange = a != null && a.accepted;
-    return stepChange || activityChange;
+  /// One of four states, only one of which offers to change anything.
+  Widget _tuningSection(ThemeData theme) {
+    final outcome = _outcome;
+    final activity = _activityOutcome;
+
+    if (outcome == null) {
+      return Text(
+        'This walk will be used the next time the app retunes.',
+        style: theme.textTheme.bodyMedium,
+      );
+    }
+
+    if (!_canApply) {
+      // Deliberately two different sentences. "Nothing worth changing" and
+      // "not enough evidence to say" are different facts, and telling a user
+      // the first when the second is true is how an app loses their trust.
+      return Text(
+        outcome.validated
+            ? 'No retuning needed — your current settings already handle your '
+                'walking well.'
+            : 'Not enough saved walks yet to check a retune against data it '
+                'was not tuned on, so nothing will be changed on the strength '
+                'of this one. ${outcome.sessionCount} stored so far; '
+                '${CalibrationOptimizer.minSessionsForHoldout} needed.',
+        style: theme.textTheme.bodyMedium,
+      );
+    }
+
+    final improvement = <String>[
+      if (outcome.accepted)
+        'cut the app’s average error from '
+            '${_pct(outcome.baselineHoldoutError)} to '
+            '${_pct(outcome.holdoutError)}',
+      if (activity != null && activity.accepted)
+        'improve telling walking, running and stairs apart from '
+            '${(activity.baselineAccuracy * 100).round()}% to '
+            '${(activity.accuracy * 100).round()}% correct',
+    ].join(', and ');
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Tuning', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        Text(
+          'Retuning would $improvement, measured across '
+          '${outcome.sessionCount} saved walks — including ones it was not '
+          'tuned on.',
+          style: theme.textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 4),
+        // Collapsed by default. The raw before/after numbers are diagnostics,
+        // not a decision aid, and putting them in front of the buttons was
+        // most of what made this screen feel like a pitch.
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: Text('See what would change',
+              style: theme.textTheme.bodyMedium),
+          children: [
+            _ParamDiff(
+              before: outcome.baselineParams,
+              after: outcome.params,
+            ),
+          ],
+        ),
+      ],
+    );
   }
+
+  /// Signed difference from a reference, with a percentage only when the
+  /// reference is large enough for one to mean anything — the same
+  /// hundred-step floor the home screen uses.
+  static String? _deltaText(int detected, int? reference) {
+    if (reference == null || reference <= 0) return null;
+    final diff = detected - reference;
+    if (diff == 0) return 'exact match';
+    final magnitude = diff.abs();
+    final direction = diff > 0 ? 'more' : 'fewer';
+    if (reference < 100) return '$magnitude $direction';
+    final pct = (magnitude / reference) * 100;
+    return '$magnitude $direction · ${pct.toStringAsFixed(1)}%';
+  }
+
+  /// True only when the optimiser accepted something.
+  ///
+  /// Gating on `params != baselineParams` — which is what this used to do —
+  /// asks whether the search moved, not whether it found anything worth
+  /// adopting. CalibrationOutcome.accepted is the predicate that already
+  /// answers the right question.
+  bool get _canApply =>
+      (_outcome?.accepted ?? false) || (_activityOutcome?.accepted ?? false);
 
   static String _pct(double normalisedError) =>
       '${(normalisedError * 100).toStringAsFixed(1)}%';
@@ -532,26 +586,6 @@ class _ParamDiff extends StatelessWidget {
       };
 }
 
-class _Metric extends StatelessWidget {
-  const _Metric({required this.label, required this.value});
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      children: [
-        Text(value,
-            style: theme.textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
-        Text(label, style: theme.textTheme.bodySmall),
-      ],
-    );
-  }
-}
-
 class _Bullet extends StatelessWidget {
   const _Bullet(this.text);
   final String text;
@@ -571,31 +605,6 @@ class _Bullet extends StatelessWidget {
   }
 }
 
-class _Note extends StatelessWidget {
-  const _Note({required this.icon, required this.text});
-  final IconData icon;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 18),
-          const SizedBox(width: 10),
-          Expanded(child: Text(text, style: theme.textTheme.bodySmall)),
-        ],
-      ),
-    );
-  }
-}
 
 class _ErrorBanner extends StatelessWidget {
   const _ErrorBanner(this.message);
@@ -616,6 +625,63 @@ class _ErrorBanner extends StatelessWidget {
         message,
         style: theme.textTheme.bodySmall
             ?.copyWith(color: theme.colorScheme.onErrorContainer),
+      ),
+    );
+  }
+}
+
+/// One row of the test comparison: a reference, its count, and how far the
+/// app's count sat from it.
+///
+/// A row rather than the old three-across metric strip. Three numbers side by
+/// side with a bare "off by 1.7%" underneath hid the one thing worth knowing —
+/// whether the app counted too many or too few.
+class _ComparisonRow extends StatelessWidget {
+  const _ComparisonRow({
+    required this.label,
+    required this.value,
+    this.delta,
+    this.emphasised = false,
+  });
+
+  final String label;
+  final String value;
+  final String? delta;
+  final bool emphasised;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Expanded(child: Text(label, style: theme.textTheme.bodyLarge)),
+          Text(
+            value,
+            style: (emphasised
+                    ? theme.textTheme.headlineSmall
+                    : theme.textTheme.titleLarge)
+                ?.copyWith(
+              fontWeight: emphasised ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
+          if (delta != null) ...[
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 110,
+              child: Text(
+                delta!,
+                textAlign: TextAlign.right,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.outline),
+              ),
+            ),
+          ] else
+            const SizedBox(width: 122),
+        ],
       ),
     );
   }
