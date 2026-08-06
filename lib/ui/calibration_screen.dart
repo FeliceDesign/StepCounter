@@ -42,6 +42,13 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
   /// StepSensorService.recordingHardwareDelta for why it is not always
   /// available at the moment recording stops.
   int? _hardwareSteps;
+
+  /// Row id of the walk just saved, so it can be taken back out again. The
+  /// recording is persisted before the result screen renders — it has to be,
+  /// because the tuning proposal is computed from the whole corpus including
+  /// it — so "delete" here is a real deletion rather than a decision not to
+  /// save.
+  int? _sessionId;
   final _actualController = TextEditingController();
 
   /// What the user says they are about to do. Stored with the recording so the
@@ -152,7 +159,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     // the settling time it needed.
     final hardware = await scope.bridge.recordingHardwareDelta();
 
-    await repo.saveManualSession(
+    final sessionId = await repo.saveManualSession(
       samples: _recorded!.samples,
       pressureSamples: _recorded!.pressureSamples,
       actualSteps: actual,
@@ -171,6 +178,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     if (!mounted) return;
     setState(() {
       _busy = false;
+      _sessionId = sessionId;
       _hardwareSteps = hardware;
       _outcome = outcome;
       _activityOutcome = activityOutcome;
@@ -435,9 +443,67 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
               ),
             ),
           ],
+          const SizedBox(height: 8),
+          // The moment you know a walk was bad — you lost count, the phone
+          // slipped, someone stopped you halfway — is right now, looking at
+          // the number. Making you find it again in a list later is how bad
+          // data ends up training the detector.
+          Center(
+            child: TextButton.icon(
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('Delete this test'),
+              onPressed: _busy ? null : _deleteThisTest,
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  /// Removes the walk just recorded, and with it the tuning proposal.
+  ///
+  /// Dropping the proposal matters and is not tidiness: calibration has
+  /// already run across the whole corpus *including* this walk by the time
+  /// this screen appears, so the suggested change was partly derived from the
+  /// data being deleted. Leaving Apply available would let a walk the user
+  /// just rejected tune the detector anyway.
+  Future<void> _deleteThisTest() async {
+    final id = _sessionId;
+    if (id == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete this test?'),
+        content: const Text(
+          'The recording and its counts are removed, and the app will not '
+          'learn from this walk. Any tuning suggested from it is dropped too.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _busy = true);
+    final navigator = Navigator.of(context);
+    await AppScope.of(context).repository.deleteSession(id);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _sessionId = null;
+      _outcome = null;
+      _activityOutcome = null;
+    });
+    navigator.pop(false);
   }
 
   /// One of four states, only one of which offers to change anything.

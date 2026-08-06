@@ -81,6 +81,16 @@ class _CalibrationHistoryScreenState extends State<CalibrationHistoryScreen> {
                 ),
               ),
               const SizedBox(height: 4),
+              if (sessions.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Text(
+                    'A walk that went wrong — miscounted, interrupted, phone '
+                    'dropped — is worth deleting rather than calibrating '
+                    'from.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
               if (sessions.isEmpty)
                 const Padding(
                   padding: EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -340,6 +350,28 @@ class _SessionTile extends StatelessWidget {
         padding: const EdgeInsets.only(top: 4),
         child: Text(subtitle, style: theme.textTheme.bodySmall),
       ),
+      // A visible affordance rather than only a long-press. Removing a walk
+      // that went wrong is not an advanced operation — it is the ordinary
+      // response to miscounting, and a gesture nobody can see is the same as
+      // not having it.
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Options',
+        onSelected: (v) {
+          if (v == 'delete') _confirmDelete(context);
+        },
+        itemBuilder: (context) => [
+          const PopupMenuItem(
+            value: 'delete',
+            child: Row(
+              children: [
+                Icon(Icons.delete_outline),
+                SizedBox(width: 12),
+                Text('Delete'),
+              ],
+            ),
+          ),
+        ],
+      ),
       onLongPress: () => _confirmDelete(context),
     );
   }
@@ -374,7 +406,7 @@ class _SessionTile extends StatelessWidget {
         title: const Text('Delete this result?'),
         content: const Text(
           'The recording and its counts are removed, and the app stops '
-          'learning from it.',
+          'learning from it. Retuning after this will not use it.',
         ),
         actions: [
           TextButton(

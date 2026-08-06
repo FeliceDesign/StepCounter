@@ -503,4 +503,61 @@ void main() {
     });
   });
 
+  group('removing a bad walk', () {
+    Future<int> addSession(String source, {int detected = 40}) =>
+        db.insertSession(CalibrationSessionsCompanion.insert(
+          recordedAt: DateTime.now().millisecondsSinceEpoch,
+          durationMs: 40000,
+          actualSteps: 40,
+          detectedSteps: detected,
+          source: source,
+          samples: Uint8List.fromList([1, 2, 3, 4]),
+          userSteps: const Value(40),
+        ));
+
+    testWidgets('the results list offers deletion without a hidden gesture',
+        (tester) async {
+      // A long-press was the only way to remove a walk, which is the same as
+      // there being no way for anyone who does not already know.
+      await addSession('manual');
+      await tester.pumpWidget(wrap(const CalibrationHistoryScreen()));
+      await tester.pump(const Duration(milliseconds: 10));
+
+      expect(find.byType(PopupMenuButton<String>), findsOneWidget);
+
+      // Pumped until the menu has finished animating in. Tapping a menu item
+      // mid-animation lands on wherever it was, not where it ends up.
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+      expect(find.text('Delete'), findsOneWidget);
+
+      // PopupMenuButton fires onSelected only once its route has finished
+      // popping, so the confirmation dialog needs a couple of frames beyond
+      // the menu's own dismissal before it exists to be tapped.
+      await tester.tap(find.text('Delete'));
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+      expect(find.text('Delete this result?'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(await db.allSessions(), isEmpty);
+      await unmount(tester);
+    });
+
+    testWidgets('deleting a walk really removes it from the corpus',
+        (tester) async {
+      final id = await addSession('manual');
+      expect((await db.allSessions()).length, 1);
+      await repo.deleteSession(id);
+      expect(await db.allSessions(), isEmpty);
+      // And the optimiser sees the smaller corpus, which is the whole point.
+      expect(await repo.runCalibration(), isNull);
+    });
+  });
+
 }

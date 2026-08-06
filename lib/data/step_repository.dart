@@ -241,7 +241,9 @@ class StepRepository extends ChangeNotifier {
 
   // ---- Sessions ----------------------------------------------------------
 
-  Future<void> saveManualSession({
+  /// Returns the new session's id, so a caller that immediately regrets the
+  /// walk can remove it again — see the result screen.
+  Future<int> saveManualSession({
     required Uint8List samples,
     required int actualSteps,
     required int durationMs,
@@ -257,7 +259,7 @@ class StepRepository extends ChangeNotifier {
       params: _params,
       activityParams: _activityParams,
     );
-    await db.insertSession(CalibrationSessionsCompanion.insert(
+    final id = await db.insertSession(CalibrationSessionsCompanion.insert(
       recordedAt: DateTime.now().millisecondsSinceEpoch,
       durationMs: durationMs,
       actualSteps: actualSteps,
@@ -273,6 +275,7 @@ class StepRepository extends ChangeNotifier {
     ));
     await db.trimSessions();
     notifyListeners();
+    return id;
   }
 
   /// Pulls hardware-graded windows out of the service and stores them as
