@@ -6,8 +6,21 @@ on:
     branches:
       - claude/**
 
+# Keyed on the commit, not the branch.
+#
+# A branch-wide group means every run on this branch shares one slot, which is
+# fine until a run gets stuck: GitHub reported one as queued while refusing to
+# cancel it ("cannot cancel a workflow re-run that has not yet queued"), and
+# because it never released the slot, every later push queued behind it
+# indefinitely. Neither the API nor the web UI could clear it.
+#
+# Per-commit groups keep the useful half — re-running the same commit still
+# supersedes the earlier attempt — while stopping one wedged run from taking
+# the branch down with it. The cost is that pushing several commits in quick
+# succession builds all of them rather than only the last, which for a repo
+# whose every build is an installable APK is closer to a feature than a waste.
 concurrency:
-  group: build-apk-${{ github.ref }}
+  group: build-apk-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
