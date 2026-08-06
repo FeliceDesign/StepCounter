@@ -210,6 +210,7 @@ class StepRepository extends ChangeNotifier {
     required int durationMs,
     Uint8List? pressureSamples,
     Activity? declaredActivity,
+    int? hardwareSteps,
   }) async {
     final detected = MotionPipeline.replayTotal(
       SensorSample.unpack(samples),
@@ -228,6 +229,10 @@ class StepRepository extends ChangeNotifier {
       samples: samples,
       pressureSamples: Value(pressureSamples),
       declaredActivity: Value(declaredActivity?.id),
+      userSteps: Value(actualSteps),
+      hardwareSteps: Value(hardwareSteps),
+      // A walk the user made and counted themselves is never trimmed away.
+      pinned: const Value(true),
     ));
     await db.trimSessions();
     notifyListeners();
@@ -253,6 +258,7 @@ class StepRepository extends ChangeNotifier {
         source: 'automatic',
         samples: w.samples,
         pressureSamples: Value(w.pressureSamples),
+        hardwareSteps: Value(w.hardwareCount),
       ));
     }
     await db.trimSessions();
@@ -263,6 +269,16 @@ class StepRepository extends ChangeNotifier {
   Future<int> ingestAutoWindows() => _ingestAutoWindows();
 
   Future<List<CalibrationSession>> allSessions() => db.allSessions();
+
+  Future<void> deleteSession(int id) async {
+    await db.deleteSession(id);
+    notifyListeners();
+  }
+
+  /// Stored session counts by source — the real corpus size, as opposed to the
+  /// depth of the native staging directory.
+  Future<({int manual, int automatic})> sessionCountsBySource() =>
+      db.sessionCountsBySource();
 
   Stream<List<CalibrationSession>> watchSessions() => db.watchSessions();
 
@@ -287,7 +303,15 @@ class StepRepository extends ChangeNotifier {
           .toList(),
       actualSteps: sessions.map((s) => s.actualSteps).toList(),
       startParamsJson: _params.toJson(),
-      requireHoldout: automatic,
+      // Both paths now require a real train/holdout split. The manual flow
+      // used not to, which let it "accept" an improvement measured against the
+      // very walk it had just been fitted to — the single largest source of
+      // extreme-looking proposals. Below the floor the result screen simply
+      // says the walk was saved for later.
+      requireHoldout: true,
+      minSessions: automatic
+          ? CalibrationOptimizer.minSessionsForAutoAdopt
+          : CalibrationOptimizer.minSessionsForHoldout,
     ));
   }
 

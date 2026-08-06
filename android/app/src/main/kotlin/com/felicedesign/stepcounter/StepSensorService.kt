@@ -54,6 +54,12 @@ class StepSensorService : Service(), SensorEventListener {
     // ---- Manual recording (Test & Recalibrate) ----
     private var recording = false
     private val recordBuffer = ArrayList<DoubleArray>()
+
+    // Grading of a manual recording against Android's own pedometer.
+    private var recordStartHardware = -1L
+    private var recordStartElapsedMs = 0L
+    private var recordStopElapsedMs = 0L
+    private var recordDurationMs = 0L
     private val pressureRecordBuffer = ArrayList<DoubleArray>()
 
     // ---- Automatic calibration window capture ----
@@ -468,17 +474,48 @@ class StepSensorService : Service(), SensorEventListener {
     fun startRecording() {
         recordBuffer.clear()
         pressureRecordBuffer.clear()
+        recordStartHardware = latestHardwareTotal
+        recordStartElapsedMs = SystemClock.elapsedRealtime()
+        recordStopElapsedMs = 0L
+        recordDurationMs = 0L
         recording = true
     }
 
     /** Motion and barometer blobs, keyed for the method channel. */
     fun stopRecording(): Map<String, Any?> {
         recording = false
+        recordStopElapsedMs = SystemClock.elapsedRealtime()
+        recordDurationMs = recordStopElapsedMs - recordStartElapsedMs
         val motion = packSamples(recordBuffer)
         val pressure = packPressure(pressureRecordBuffer)
         recordBuffer.clear()
         pressureRecordBuffer.clear()
-        return mapOf("samples" to motion, "pressureSamples" to pressure)
+        return mapOf(
+            "samples" to motion,
+            "pressureSamples" to pressure,
+            "durationMs" to recordDurationMs,
+        )
+    }
+
+    /**
+     * How many steps Android's own counter recorded across the last manual
+     * recording, or -1 when that cannot be answered honestly.
+     *
+     * TYPE_STEP_COUNTER reports with up to ten seconds of latency - the same
+     * reason finaliseWindow() waits for QUIET_MS before trusting a label. A
+     * delta read at the instant recording stopped would be systematically low,
+     * and a "deviation from Android" column that is consistently wrong in one
+     * direction is worse than an empty one. So this refuses to answer until
+     * the counter has had time to catch up; Dart asks after the user has typed
+     * their own count, which in practice always takes longer than that.
+     */
+    fun recordingHardwareDelta(): Int {
+        if (recordStartHardware < 0 || latestHardwareTotal < 0) return -1
+        if (recordStopElapsedMs == 0L) return -1
+        if (SystemClock.elapsedRealtime() - recordStopElapsedMs < HARDWARE_SETTLE_MS) return -1
+        // A reading below where we started means the device rebooted mid-test.
+        val delta = latestHardwareTotal - recordStartHardware
+        return if (delta < 0) -1 else delta.toInt()
     }
 
     fun liveDebug(): Map<String, Any?> = detector.debugSnapshot() +
@@ -576,6 +613,12 @@ class StepSensorService : Service(), SensorEventListener {
 
         private const val PAUSE_MS = 4_000L
         private const val QUIET_MS = 20_000L
+
+        // How long after a manual recording stops before the hardware
+        // pedometer's delta is trusted. Half of QUIET_MS: the automatic
+        // windows need a genuine standstill to be sure the walk ended, while
+        // here the user has explicitly said they stopped.
+        private const val HARDWARE_SETTLE_MS = 10_000L
         private const val MAX_WINDOW_MS = 90_000L
         private const val MIN_WINDOW_STEPS = 15
         private const val MAX_PLAUSIBLE_WINDOW_STEPS = 400

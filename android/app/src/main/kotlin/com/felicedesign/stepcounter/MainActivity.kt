@@ -92,6 +92,11 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "recordingHardwareDelta" -> {
+                    val svc = StepSensorService.instance
+                    result.success(svc?.recordingHardwareDelta() ?: -1)
+                }
+
                 "stopRecording" -> {
                     val svc = StepSensorService.instance
                     if (svc == null) {

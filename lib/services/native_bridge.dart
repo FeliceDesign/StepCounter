@@ -30,10 +30,19 @@ class AutoWindow {
 /// A finished manual recording: motion, plus barometer readings when the
 /// device has one.
 class Recording {
-  const Recording({required this.samples, this.pressureSamples});
+  const Recording({
+    required this.samples,
+    this.pressureSamples,
+    this.durationMs = 0,
+  });
 
   final Uint8List samples;
   final Uint8List? pressureSamples;
+
+  /// Measured by the service across the whole recording, warm-up included.
+  /// The UI used to derive this from its own visible timer, which excluded the
+  /// countdown and was therefore always a few seconds short.
+  final int durationMs;
 
   bool get isEmpty => samples.isEmpty;
 }
@@ -177,7 +186,16 @@ class NativeBridge {
       samples: raw['samples'] as Uint8List? ?? Uint8List(0),
       pressureSamples:
           (pressure == null || pressure.isEmpty) ? null : pressure,
+      durationMs: (raw['durationMs'] as num?)?.toInt() ?? 0,
     );
+  }
+
+  /// Android's own count across the last recording, or null when it cannot be
+  /// answered honestly — no pedometer, or its reading has not settled yet.
+  /// See StepSensorService.recordingHardwareDelta.
+  Future<int?> recordingHardwareDelta() async {
+    final v = await _call<int>('recordingHardwareDelta');
+    return (v == null || v < 0) ? null : v;
   }
 
   /// Tells the service today's authoritative total so its notification is

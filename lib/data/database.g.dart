@@ -334,6 +334,41 @@ class $CalibrationSessionsTable extends CalibrationSessions
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _userStepsMeta = const VerificationMeta(
+    'userSteps',
+  );
+  @override
+  late final GeneratedColumn<int> userSteps = GeneratedColumn<int>(
+    'user_steps',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _hardwareStepsMeta = const VerificationMeta(
+    'hardwareSteps',
+  );
+  @override
+  late final GeneratedColumn<int> hardwareSteps = GeneratedColumn<int>(
+    'hardware_steps',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _pinnedMeta = const VerificationMeta('pinned');
+  @override
+  late final GeneratedColumn<bool> pinned = GeneratedColumn<bool>(
+    'pinned',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("pinned" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
   static const VerificationMeta _detectedStepsMeta = const VerificationMeta(
     'detectedSteps',
   );
@@ -402,6 +437,9 @@ class $CalibrationSessionsTable extends CalibrationSessions
     recordedAt,
     durationMs,
     actualSteps,
+    userSteps,
+    hardwareSteps,
+    pinned,
     detectedSteps,
     source,
     samples,
@@ -449,6 +487,27 @@ class $CalibrationSessionsTable extends CalibrationSessions
       );
     } else if (isInserting) {
       context.missing(_actualStepsMeta);
+    }
+    if (data.containsKey('user_steps')) {
+      context.handle(
+        _userStepsMeta,
+        userSteps.isAcceptableOrUnknown(data['user_steps']!, _userStepsMeta),
+      );
+    }
+    if (data.containsKey('hardware_steps')) {
+      context.handle(
+        _hardwareStepsMeta,
+        hardwareSteps.isAcceptableOrUnknown(
+          data['hardware_steps']!,
+          _hardwareStepsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('pinned')) {
+      context.handle(
+        _pinnedMeta,
+        pinned.isAcceptableOrUnknown(data['pinned']!, _pinnedMeta),
+      );
     }
     if (data.containsKey('detected_steps')) {
       context.handle(
@@ -520,6 +579,18 @@ class $CalibrationSessionsTable extends CalibrationSessions
         DriftSqlType.int,
         data['${effectivePrefix}actual_steps'],
       )!,
+      userSteps: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}user_steps'],
+      ),
+      hardwareSteps: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}hardware_steps'],
+      ),
+      pinned: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}pinned'],
+      )!,
       detectedSteps: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}detected_steps'],
@@ -555,9 +626,33 @@ class CalibrationSession extends DataClass
   final int recordedAt;
   final int durationMs;
 
-  /// Ground truth. From the user in the manual flow, from the hardware
-  /// pedometer in the automatic one.
+  /// The label the optimiser trains against: [userSteps] when there is one,
+  /// otherwise [hardwareSteps]. Kept as its own column so the optimiser needs
+  /// no opinion about where a label came from.
   final int actualSteps;
+
+  /// What the user typed at the end of a test walk. Null for automatically
+  /// captured windows, which nobody was asked about.
+  ///
+  /// Split out of [actualSteps] because that one column meant two different
+  /// things depending on `source`, which made it impossible to show a test's
+  /// deviation from *both* references at once — the thing a user actually
+  /// wants to see.
+  final int? userSteps;
+
+  /// What Android's own TYPE_STEP_COUNTER measured over the same interval.
+  /// Null when the device has no pedometer, when permission was refused, or
+  /// when the reading had not settled in time to be trustworthy.
+  final int? hardwareSteps;
+
+  /// Protects a session from [AppDatabase.trimSessions].
+  ///
+  /// Set on every manual test. A test the user walked and typed a number into
+  /// is the most expensive data in the app and cannot be reproduced; an
+  /// automatic window is free and the phone collects more on the next walk.
+  /// The old single cap of twenty deleted them interchangeably, so a fortnight
+  /// of background collection silently erased every test ever run.
+  final bool pinned;
 
   /// What the detector counted at the time of recording, kept for display.
   final int detectedSteps;
@@ -582,6 +677,9 @@ class CalibrationSession extends DataClass
     required this.recordedAt,
     required this.durationMs,
     required this.actualSteps,
+    this.userSteps,
+    this.hardwareSteps,
+    required this.pinned,
     required this.detectedSteps,
     required this.source,
     required this.samples,
@@ -595,6 +693,13 @@ class CalibrationSession extends DataClass
     map['recorded_at'] = Variable<int>(recordedAt);
     map['duration_ms'] = Variable<int>(durationMs);
     map['actual_steps'] = Variable<int>(actualSteps);
+    if (!nullToAbsent || userSteps != null) {
+      map['user_steps'] = Variable<int>(userSteps);
+    }
+    if (!nullToAbsent || hardwareSteps != null) {
+      map['hardware_steps'] = Variable<int>(hardwareSteps);
+    }
+    map['pinned'] = Variable<bool>(pinned);
     map['detected_steps'] = Variable<int>(detectedSteps);
     map['source'] = Variable<String>(source);
     map['samples'] = Variable<Uint8List>(samples);
@@ -613,6 +718,13 @@ class CalibrationSession extends DataClass
       recordedAt: Value(recordedAt),
       durationMs: Value(durationMs),
       actualSteps: Value(actualSteps),
+      userSteps: userSteps == null && nullToAbsent
+          ? const Value.absent()
+          : Value(userSteps),
+      hardwareSteps: hardwareSteps == null && nullToAbsent
+          ? const Value.absent()
+          : Value(hardwareSteps),
+      pinned: Value(pinned),
       detectedSteps: Value(detectedSteps),
       source: Value(source),
       samples: Value(samples),
@@ -635,6 +747,9 @@ class CalibrationSession extends DataClass
       recordedAt: serializer.fromJson<int>(json['recordedAt']),
       durationMs: serializer.fromJson<int>(json['durationMs']),
       actualSteps: serializer.fromJson<int>(json['actualSteps']),
+      userSteps: serializer.fromJson<int?>(json['userSteps']),
+      hardwareSteps: serializer.fromJson<int?>(json['hardwareSteps']),
+      pinned: serializer.fromJson<bool>(json['pinned']),
       detectedSteps: serializer.fromJson<int>(json['detectedSteps']),
       source: serializer.fromJson<String>(json['source']),
       samples: serializer.fromJson<Uint8List>(json['samples']),
@@ -650,6 +765,9 @@ class CalibrationSession extends DataClass
       'recordedAt': serializer.toJson<int>(recordedAt),
       'durationMs': serializer.toJson<int>(durationMs),
       'actualSteps': serializer.toJson<int>(actualSteps),
+      'userSteps': serializer.toJson<int?>(userSteps),
+      'hardwareSteps': serializer.toJson<int?>(hardwareSteps),
+      'pinned': serializer.toJson<bool>(pinned),
       'detectedSteps': serializer.toJson<int>(detectedSteps),
       'source': serializer.toJson<String>(source),
       'samples': serializer.toJson<Uint8List>(samples),
@@ -663,6 +781,9 @@ class CalibrationSession extends DataClass
     int? recordedAt,
     int? durationMs,
     int? actualSteps,
+    Value<int?> userSteps = const Value.absent(),
+    Value<int?> hardwareSteps = const Value.absent(),
+    bool? pinned,
     int? detectedSteps,
     String? source,
     Uint8List? samples,
@@ -673,6 +794,11 @@ class CalibrationSession extends DataClass
     recordedAt: recordedAt ?? this.recordedAt,
     durationMs: durationMs ?? this.durationMs,
     actualSteps: actualSteps ?? this.actualSteps,
+    userSteps: userSteps.present ? userSteps.value : this.userSteps,
+    hardwareSteps: hardwareSteps.present
+        ? hardwareSteps.value
+        : this.hardwareSteps,
+    pinned: pinned ?? this.pinned,
     detectedSteps: detectedSteps ?? this.detectedSteps,
     source: source ?? this.source,
     samples: samples ?? this.samples,
@@ -695,6 +821,11 @@ class CalibrationSession extends DataClass
       actualSteps: data.actualSteps.present
           ? data.actualSteps.value
           : this.actualSteps,
+      userSteps: data.userSteps.present ? data.userSteps.value : this.userSteps,
+      hardwareSteps: data.hardwareSteps.present
+          ? data.hardwareSteps.value
+          : this.hardwareSteps,
+      pinned: data.pinned.present ? data.pinned.value : this.pinned,
       detectedSteps: data.detectedSteps.present
           ? data.detectedSteps.value
           : this.detectedSteps,
@@ -716,6 +847,9 @@ class CalibrationSession extends DataClass
           ..write('recordedAt: $recordedAt, ')
           ..write('durationMs: $durationMs, ')
           ..write('actualSteps: $actualSteps, ')
+          ..write('userSteps: $userSteps, ')
+          ..write('hardwareSteps: $hardwareSteps, ')
+          ..write('pinned: $pinned, ')
           ..write('detectedSteps: $detectedSteps, ')
           ..write('source: $source, ')
           ..write('samples: $samples, ')
@@ -731,6 +865,9 @@ class CalibrationSession extends DataClass
     recordedAt,
     durationMs,
     actualSteps,
+    userSteps,
+    hardwareSteps,
+    pinned,
     detectedSteps,
     source,
     $driftBlobEquality.hash(samples),
@@ -745,6 +882,9 @@ class CalibrationSession extends DataClass
           other.recordedAt == this.recordedAt &&
           other.durationMs == this.durationMs &&
           other.actualSteps == this.actualSteps &&
+          other.userSteps == this.userSteps &&
+          other.hardwareSteps == this.hardwareSteps &&
+          other.pinned == this.pinned &&
           other.detectedSteps == this.detectedSteps &&
           other.source == this.source &&
           $driftBlobEquality.equals(other.samples, this.samples) &&
@@ -760,6 +900,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
   final Value<int> recordedAt;
   final Value<int> durationMs;
   final Value<int> actualSteps;
+  final Value<int?> userSteps;
+  final Value<int?> hardwareSteps;
+  final Value<bool> pinned;
   final Value<int> detectedSteps;
   final Value<String> source;
   final Value<Uint8List> samples;
@@ -770,6 +913,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     this.recordedAt = const Value.absent(),
     this.durationMs = const Value.absent(),
     this.actualSteps = const Value.absent(),
+    this.userSteps = const Value.absent(),
+    this.hardwareSteps = const Value.absent(),
+    this.pinned = const Value.absent(),
     this.detectedSteps = const Value.absent(),
     this.source = const Value.absent(),
     this.samples = const Value.absent(),
@@ -781,6 +927,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     required int recordedAt,
     required int durationMs,
     required int actualSteps,
+    this.userSteps = const Value.absent(),
+    this.hardwareSteps = const Value.absent(),
+    this.pinned = const Value.absent(),
     required int detectedSteps,
     required String source,
     required Uint8List samples,
@@ -797,6 +946,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     Expression<int>? recordedAt,
     Expression<int>? durationMs,
     Expression<int>? actualSteps,
+    Expression<int>? userSteps,
+    Expression<int>? hardwareSteps,
+    Expression<bool>? pinned,
     Expression<int>? detectedSteps,
     Expression<String>? source,
     Expression<Uint8List>? samples,
@@ -808,6 +960,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
       if (recordedAt != null) 'recorded_at': recordedAt,
       if (durationMs != null) 'duration_ms': durationMs,
       if (actualSteps != null) 'actual_steps': actualSteps,
+      if (userSteps != null) 'user_steps': userSteps,
+      if (hardwareSteps != null) 'hardware_steps': hardwareSteps,
+      if (pinned != null) 'pinned': pinned,
       if (detectedSteps != null) 'detected_steps': detectedSteps,
       if (source != null) 'source': source,
       if (samples != null) 'samples': samples,
@@ -821,6 +976,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     Value<int>? recordedAt,
     Value<int>? durationMs,
     Value<int>? actualSteps,
+    Value<int?>? userSteps,
+    Value<int?>? hardwareSteps,
+    Value<bool>? pinned,
     Value<int>? detectedSteps,
     Value<String>? source,
     Value<Uint8List>? samples,
@@ -832,6 +990,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
       recordedAt: recordedAt ?? this.recordedAt,
       durationMs: durationMs ?? this.durationMs,
       actualSteps: actualSteps ?? this.actualSteps,
+      userSteps: userSteps ?? this.userSteps,
+      hardwareSteps: hardwareSteps ?? this.hardwareSteps,
+      pinned: pinned ?? this.pinned,
       detectedSteps: detectedSteps ?? this.detectedSteps,
       source: source ?? this.source,
       samples: samples ?? this.samples,
@@ -854,6 +1015,15 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
     }
     if (actualSteps.present) {
       map['actual_steps'] = Variable<int>(actualSteps.value);
+    }
+    if (userSteps.present) {
+      map['user_steps'] = Variable<int>(userSteps.value);
+    }
+    if (hardwareSteps.present) {
+      map['hardware_steps'] = Variable<int>(hardwareSteps.value);
+    }
+    if (pinned.present) {
+      map['pinned'] = Variable<bool>(pinned.value);
     }
     if (detectedSteps.present) {
       map['detected_steps'] = Variable<int>(detectedSteps.value);
@@ -880,6 +1050,9 @@ class CalibrationSessionsCompanion extends UpdateCompanion<CalibrationSession> {
           ..write('recordedAt: $recordedAt, ')
           ..write('durationMs: $durationMs, ')
           ..write('actualSteps: $actualSteps, ')
+          ..write('userSteps: $userSteps, ')
+          ..write('hardwareSteps: $hardwareSteps, ')
+          ..write('pinned: $pinned, ')
           ..write('detectedSteps: $detectedSteps, ')
           ..write('source: $source, ')
           ..write('samples: $samples, ')
@@ -1668,6 +1841,9 @@ typedef $$CalibrationSessionsTableCreateCompanionBuilder =
       required int recordedAt,
       required int durationMs,
       required int actualSteps,
+      Value<int?> userSteps,
+      Value<int?> hardwareSteps,
+      Value<bool> pinned,
       required int detectedSteps,
       required String source,
       required Uint8List samples,
@@ -1680,6 +1856,9 @@ typedef $$CalibrationSessionsTableUpdateCompanionBuilder =
       Value<int> recordedAt,
       Value<int> durationMs,
       Value<int> actualSteps,
+      Value<int?> userSteps,
+      Value<int?> hardwareSteps,
+      Value<bool> pinned,
       Value<int> detectedSteps,
       Value<String> source,
       Value<Uint8List> samples,
@@ -1713,6 +1892,21 @@ class $$CalibrationSessionsTableFilterComposer
 
   ColumnFilters<int> get actualSteps => $composableBuilder(
     column: $table.actualSteps,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get userSteps => $composableBuilder(
+    column: $table.userSteps,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get hardwareSteps => $composableBuilder(
+    column: $table.hardwareSteps,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get pinned => $composableBuilder(
+    column: $table.pinned,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1771,6 +1965,21 @@ class $$CalibrationSessionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get userSteps => $composableBuilder(
+    column: $table.userSteps,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get hardwareSteps => $composableBuilder(
+    column: $table.hardwareSteps,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get pinned => $composableBuilder(
+    column: $table.pinned,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get detectedSteps => $composableBuilder(
     column: $table.detectedSteps,
     builder: (column) => ColumnOrderings(column),
@@ -1823,6 +2032,17 @@ class $$CalibrationSessionsTableAnnotationComposer
     column: $table.actualSteps,
     builder: (column) => column,
   );
+
+  GeneratedColumn<int> get userSteps =>
+      $composableBuilder(column: $table.userSteps, builder: (column) => column);
+
+  GeneratedColumn<int> get hardwareSteps => $composableBuilder(
+    column: $table.hardwareSteps,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get pinned =>
+      $composableBuilder(column: $table.pinned, builder: (column) => column);
 
   GeneratedColumn<int> get detectedSteps => $composableBuilder(
     column: $table.detectedSteps,
@@ -1893,6 +2113,9 @@ class $$CalibrationSessionsTableTableManager
                 Value<int> recordedAt = const Value.absent(),
                 Value<int> durationMs = const Value.absent(),
                 Value<int> actualSteps = const Value.absent(),
+                Value<int?> userSteps = const Value.absent(),
+                Value<int?> hardwareSteps = const Value.absent(),
+                Value<bool> pinned = const Value.absent(),
                 Value<int> detectedSteps = const Value.absent(),
                 Value<String> source = const Value.absent(),
                 Value<Uint8List> samples = const Value.absent(),
@@ -1903,6 +2126,9 @@ class $$CalibrationSessionsTableTableManager
                 recordedAt: recordedAt,
                 durationMs: durationMs,
                 actualSteps: actualSteps,
+                userSteps: userSteps,
+                hardwareSteps: hardwareSteps,
+                pinned: pinned,
                 detectedSteps: detectedSteps,
                 source: source,
                 samples: samples,
@@ -1915,6 +2141,9 @@ class $$CalibrationSessionsTableTableManager
                 required int recordedAt,
                 required int durationMs,
                 required int actualSteps,
+                Value<int?> userSteps = const Value.absent(),
+                Value<int?> hardwareSteps = const Value.absent(),
+                Value<bool> pinned = const Value.absent(),
                 required int detectedSteps,
                 required String source,
                 required Uint8List samples,
@@ -1925,6 +2154,9 @@ class $$CalibrationSessionsTableTableManager
                 recordedAt: recordedAt,
                 durationMs: durationMs,
                 actualSteps: actualSteps,
+                userSteps: userSteps,
+                hardwareSteps: hardwareSteps,
+                pinned: pinned,
                 detectedSteps: detectedSteps,
                 source: source,
                 samples: samples,

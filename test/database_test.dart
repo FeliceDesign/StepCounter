@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stepcounter/data/database.dart';
@@ -189,9 +190,9 @@ void main() {
 
     test('trimming keeps the newest and drops the rest', () async {
       for (var i = 1; i <= 25; i++) {
-        await addSession(i);
+        await addSession(i, source: 'automatic');
       }
-      await db.trimSessions(keep: 20);
+      await db.trimSessions(keepAutomatic: 20);
 
       final all = await db.allSessions();
       expect(all.length, 20);
@@ -202,8 +203,49 @@ void main() {
     test('trimming is a no-op below the cap', () async {
       await addSession(1);
       await addSession(2);
-      await db.trimSessions(keep: 20);
+      await db.trimSessions();
       expect((await db.allSessions()).length, 2);
+    });
+
+    test('the two sources are capped independently', () async {
+      // A fortnight of background collection used to evict every manual test,
+      // because a single cap treated them as interchangeable.
+      for (var i = 1; i <= 25; i++) {
+        await addSession(i, source: 'automatic');
+      }
+      for (var i = 100; i <= 104; i++) {
+        await addSession(i, source: 'manual');
+      }
+      await db.trimSessions(keepAutomatic: 10, keepManual: 60);
+
+      final all = await db.allSessions();
+      expect(all.where((s) => s.source == 'automatic').length, 10);
+      expect(all.where((s) => s.source == 'manual').length, 5);
+    });
+
+    test('pinned sessions are never trimmed', () async {
+      for (var i = 1; i <= 5; i++) {
+        await db.insertSession(CalibrationSessionsCompanion.insert(
+          recordedAt: DateTime.now().millisecondsSinceEpoch + i,
+          durationMs: 30000,
+          actualSteps: i,
+          detectedSteps: i,
+          source: 'automatic',
+          samples: Uint8List.fromList([1, 2, 3, 4]),
+          pinned: const Value(true),
+        ));
+      }
+      await db.trimSessions(keepAutomatic: 1);
+      expect((await db.allSessions()).length, 5);
+    });
+
+    test('counts by source come from the table, not the staging directory', () async {
+      await addSession(1, source: 'manual');
+      await addSession(2, source: 'automatic');
+      await addSession(3, source: 'automatic');
+      final counts = await db.sessionCountsBySource();
+      expect(counts.manual, 1);
+      expect(counts.automatic, 2);
     });
   });
 

@@ -93,6 +93,28 @@ class CalibrationOptimizer {
   /// windows, regardless of how good the error looks.
   static const int minSessionsForAutoAdopt = 6;
 
+  /// How far one calibration may move a parameter, as a fraction of that
+  /// parameter's full legal range, measured from where the search started.
+  ///
+  /// Without this, round 0 swept the entire legal range of every parameter, so
+  /// a corpus of a few short walks could move the motion floor from 0.35 to
+  /// 1.5 in a single adoption. That is what made proposed changes look wild,
+  /// and wild changes are exactly the ones a user cannot judge.
+  ///
+  /// It bounds the size of one step, not what is reachable overall: parameters
+  /// keep moving across successive calibrations, each of which the user sees
+  /// and can decline.
+  static const double trustRegionFraction = 0.35;
+
+  /// Weight on distance from the anchor parameters, in units of normalised
+  /// error.
+  ///
+  /// A tie-breaker toward the status quo. A candidate has to beat the
+  /// incumbent by more than this times how far it moved, so a 0.1% error win
+  /// cannot buy halving a threshold. Small enough that a genuine improvement
+  /// still wins easily.
+  static const double regularisationLambda = 0.02;
+
   /// Required relative improvement on held-out data before new parameters are
   /// adopted. Small wins are usually noise, and churning the detector's
   /// behaviour for noise makes the app feel unpredictable.
@@ -163,12 +185,26 @@ class CalibrationOptimizer {
   /// be clamped to physiological ranges, shown to the user, diffed against the
   /// previous version, and reverted — none of which is true of an opaque set of
   /// weights. It also converges in well under a second on a phone.
+  /// Mean absolute distance between two parameter vectors, with each field
+  /// normalised by its own legal range so they are commensurable.
+  static double paramDistance(CalibrationParams a, CalibrationParams b) {
+    var sum = 0.0;
+    for (final key in CalibrationParams.tunableKeys) {
+      final (lo, hi) = CalibrationParams.bounds[key]!;
+      final span = hi - lo;
+      if (span <= 0) continue;
+      sum += (a[key] - b[key]).abs() / span;
+    }
+    return sum / CalibrationParams.tunableKeys.length;
+  }
+
   static CalibrationOutcome optimize({
     required List<LabelledSession> sessions,
     CalibrationParams start = CalibrationParams.factory,
     int rounds = 3,
     int candidatesPerRound = 7,
     bool requireHoldout = false,
+    int minSessions = 0,
   }) {
     if (sessions.isEmpty) {
       return CalibrationOutcome(
@@ -195,36 +231,47 @@ class CalibrationOptimizer {
     // detects nothing, no single move improves the score, and the search sits
     // there forever. Restarting from a known-sane point costs one extra pass
     // and makes a badly calibrated device recoverable.
+    // Each seed carries its own anchor, and that is what keeps the trust
+    // region from trapping a badly calibrated device.
+    //
+    // The current-seeded pass is bounded around wherever the user is now, so
+    // one adoption cannot fling a parameter across its range. The
+    // factory-seeded pass is bounded around the factory vector instead — so
+    // the neighbourhood of the defaults is always reachable in a single
+    // adoption, however far the incumbent has drifted. What is bounded is
+    // large moves toward nowhere in particular, never the route home.
     var best = start.clamped();
-    var bestError = evaluate(best, train).error;
 
     for (final seed in <CalibrationParams>{
       start.clamped(),
       CalibrationParams.factory,
     }) {
+      final anchor = seed;
       var current = seed;
-      var currentError = evaluate(current, train).error;
+      var currentScore = _score(current, train, anchor);
 
       for (var round = 0; round < rounds; round++) {
         for (final key in CalibrationParams.tunableKeys) {
-          for (final v
-              in _candidates(key, current[key], round, candidatesPerRound)) {
+          for (final v in _candidates(
+              key, current[key], anchor[key], round, candidatesPerRound)) {
             final trial = current.withField(key, v);
             if (trial == current) continue;
-            final e = evaluate(trial, train).error;
-            if (e < currentError) {
-              currentError = e;
+            final e = _score(trial, train, anchor);
+            if (e < currentScore) {
+              currentScore = e;
               current = trial;
             }
           }
         }
       }
 
-      if (currentError < bestError) {
-        bestError = currentError;
+      // Compared on unregularised error, because the two seeds have different
+      // anchors and their penalties are therefore not comparable.
+      if (evaluate(current, train).error < evaluate(best, train).error) {
         best = current;
       }
     }
+    final bestError = evaluate(best, train).error;
 
     // Score both old and new on data the optimiser never touched.
     final scoringSet = validated ? holdout : train;
@@ -238,8 +285,7 @@ class CalibrationOptimizer {
     final improved = best != start &&
         baselineHoldoutError > 0 &&
         holdoutError <= baselineHoldoutError * (1 - minRelativeImprovement);
-    final enoughSessions =
-        !requireHoldout || sessions.length >= minSessionsForAutoAdopt;
+    final enoughSessions = sessions.length >= minSessions;
     final accepted = improved && enoughSessions && (validated || !requireHoldout);
 
     return CalibrationOutcome(
@@ -254,26 +300,47 @@ class CalibrationOptimizer {
     );
   }
 
+  /// The training error, plus a small penalty for how far the candidate has
+  /// moved from [anchor].
+  ///
+  /// Only the *search* is regularised. The errors reported to the user, and
+  /// the ones the adoption decision is made on, stay pure — see [optimize].
+  /// A number labelled "how wrong will the app be" must mean that and nothing
+  /// else.
+  static double _score(
+    CalibrationParams p,
+    List<LabelledSession> train,
+    CalibrationParams anchor,
+  ) =>
+      evaluate(p, train).error +
+      regularisationLambda * paramDistance(p, anchor);
+
   /// Candidate values for one parameter.
   ///
-  /// Round 0 sweeps the full legal range so the search cannot get stuck in a
-  /// local minimum near the starting point; later rounds narrow around the
-  /// current best to refine it.
+  /// Round 0 sweeps the whole trust region around [anchor] so the search
+  /// cannot get stuck beside its starting point; later rounds narrow around
+  /// the current best to refine it. Every round is clipped to the trust
+  /// region, so no sequence of rounds can escape it.
   static List<double> _candidates(
     String key,
     double current,
+    double anchor,
     int round,
     int count,
   ) {
     final (lo, hi) = CalibrationParams.bounds[key]!;
+    final reach = (hi - lo) * trustRegionFraction;
+    final trustLo = (anchor - reach).clamp(lo, hi).toDouble();
+    final trustHi = (anchor + reach).clamp(lo, hi).toDouble();
+
     double from, to;
     if (round == 0) {
-      from = lo;
-      to = hi;
+      from = trustLo;
+      to = trustHi;
     } else {
       final width = (hi - lo) / (3 * round + 1);
-      from = (current - width).clamp(lo, hi);
-      to = (current + width).clamp(lo, hi);
+      from = (current - width).clamp(trustLo, trustHi).toDouble();
+      to = (current + width).clamp(trustLo, trustHi).toDouble();
     }
     if (to <= from) return [current];
 
@@ -299,6 +366,7 @@ class CalibrationJob {
     required this.startParamsJson,
     this.packedPressure = const [],
     this.requireHoldout = false,
+    this.minSessions = 0,
   });
 
   final List<Uint8List> packedSessions;
@@ -310,6 +378,9 @@ class CalibrationJob {
 
   final String startParamsJson;
   final bool requireHoldout;
+
+  /// Smallest corpus this job may adopt from. See [CalibrationOptimizer.optimize].
+  final int minSessions;
 }
 
 /// Runs [CalibrationOptimizer.optimize] in a background isolate.
@@ -335,6 +406,7 @@ Future<CalibrationOutcome> runCalibrationInIsolate(CalibrationJob job) {
       sessions: sessions,
       start: CalibrationParams.fromJson(job.startParamsJson),
       requireHoldout: job.requireHoldout,
+      minSessions: job.minSessions,
     );
   });
 }

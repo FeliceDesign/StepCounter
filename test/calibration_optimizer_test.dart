@@ -190,6 +190,7 @@ void main() {
         sessions: weakGaitCorpus(count: 4),
         start: overStrict,
         requireHoldout: true,
+        minSessions: CalibrationOptimizer.minSessionsForAutoAdopt,
       );
       expect(outcome.sessionCount, lessThan(CalibrationOptimizer.minSessionsForAutoAdopt));
       expect(outcome.accepted, isFalse);
@@ -200,6 +201,7 @@ void main() {
         sessions: weakGaitCorpus(count: 9),
         start: overStrict,
         requireHoldout: true,
+        minSessions: CalibrationOptimizer.minSessionsForAutoAdopt,
       );
       expect(outcome.accepted, isTrue);
       expect(outcome.validated, isTrue);
@@ -243,4 +245,99 @@ void main() {
       expect(outcome.accepted, inline.accepted);
     });
   });
+
+  group('bounded proposals', () {
+    test('every proposal lands near where the search started, or near factory',
+        () {
+      // The complaint this exists for: proposals that swung a parameter from
+      // one end of its legal range to the other on the strength of a few short
+      // walks. Round 0 used to sweep lo..hi for every field.
+      //
+      // The guarantee is deliberately "near one of two anchors" and not "near
+      // the incumbent". Descent runs twice, from the current parameters and
+      // from the factory ones, each bounded around its own seed. A device that
+      // has drifted somewhere bad must always be able to get home in one
+      // adoption, so a large move *toward factory* is exactly what should stay
+      // legal — it is large moves toward nowhere in particular that are not.
+      final outcome = CalibrationOptimizer.optimize(
+        sessions: weakGaitCorpus(count: 9),
+        start: overStrict,
+      );
+      for (final key in CalibrationParams.tunableKeys) {
+        final (lo, hi) = CalibrationParams.bounds[key]!;
+        final reach = (hi - lo) * CalibrationOptimizer.trustRegionFraction + 1e-6;
+        final fromStart = (outcome.params[key] - overStrict[key]).abs();
+        final fromFactory =
+            (outcome.params[key] - CalibrationParams.factory[key]).abs();
+        expect(
+          fromStart <= reach || fromFactory <= reach,
+          isTrue,
+          reason: '\$key is \$fromStart from the incumbent and \$fromFactory '
+              'from factory, both beyond a \$reach trust region',
+        );
+      }
+    });
+
+    test('an unhelpful parameter is not dragged far for a marginal win', () {
+      // Regularisation, observed rather than asserted directly: on a corpus
+      // the incumbent already handles, the search should sit still rather than
+      // wander for noise.
+      final outcome = CalibrationOptimizer.optimize(sessions: healthyCorpus());
+      expect(
+        CalibrationOptimizer.paramDistance(
+            outcome.params, CalibrationParams.factory),
+        lessThan(0.1),
+      );
+    });
+
+    test('a badly calibrated device can still reach the factory defaults', () {
+      // The escape hatch the trust region must not close. The factory-seeded
+      // pass anchors on the factory vector, so its whole trust region is
+      // centred there however far the incumbent has drifted.
+      final outcome = CalibrationOptimizer.optimize(
+        sessions: weakGaitCorpus(count: 9),
+        start: overStrict,
+      );
+      final before = CalibrationOptimizer.paramDistance(
+          overStrict, CalibrationParams.factory);
+      final after = CalibrationOptimizer.paramDistance(
+          outcome.params, CalibrationParams.factory);
+      expect(after, lessThan(before));
+    });
+
+    test('reported errors are never regularised', () {
+      // The penalty shapes what the search proposes. It must not touch the
+      // numbers shown to the user, which claim to say how wrong the app will
+      // be and must mean exactly that.
+      final sessions = weakGaitCorpus(count: 9);
+      final outcome = CalibrationOptimizer.optimize(
+        sessions: sessions,
+        start: overStrict,
+      );
+      final (train, holdout) = CalibrationOptimizer.split(sessions);
+      final scoringSet = holdout.isEmpty ? train : holdout;
+      expect(
+        outcome.holdoutError,
+        closeTo(CalibrationOptimizer.evaluate(outcome.params, scoringSet).error, 1e-12),
+      );
+      expect(
+        outcome.baselineHoldoutError,
+        closeTo(CalibrationOptimizer.evaluate(overStrict, scoringSet).error, 1e-12),
+      );
+    });
+
+    test('the manual path will not adopt from a single walk', () {
+      // requireHoldout used to be false on the manual path, which made the
+      // "improvement" a measurement against the very session just fitted.
+      final outcome = CalibrationOptimizer.optimize(
+        sessions: weakGaitCorpus(count: 1),
+        start: overStrict,
+        requireHoldout: true,
+        minSessions: CalibrationOptimizer.minSessionsForHoldout,
+      );
+      expect(outcome.accepted, isFalse);
+      expect(outcome.validated, isFalse);
+    });
+  });
+
 }

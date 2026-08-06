@@ -37,9 +37,33 @@ class CalibrationSessions extends Table {
   IntColumn get recordedAt => integer()();
   IntColumn get durationMs => integer()();
 
-  /// Ground truth. From the user in the manual flow, from the hardware
-  /// pedometer in the automatic one.
+  /// The label the optimiser trains against: [userSteps] when there is one,
+  /// otherwise [hardwareSteps]. Kept as its own column so the optimiser needs
+  /// no opinion about where a label came from.
   IntColumn get actualSteps => integer()();
+
+  /// What the user typed at the end of a test walk. Null for automatically
+  /// captured windows, which nobody was asked about.
+  ///
+  /// Split out of [actualSteps] because that one column meant two different
+  /// things depending on `source`, which made it impossible to show a test's
+  /// deviation from *both* references at once — the thing a user actually
+  /// wants to see.
+  IntColumn get userSteps => integer().nullable()();
+
+  /// What Android's own TYPE_STEP_COUNTER measured over the same interval.
+  /// Null when the device has no pedometer, when permission was refused, or
+  /// when the reading had not settled in time to be trustworthy.
+  IntColumn get hardwareSteps => integer().nullable()();
+
+  /// Protects a session from [AppDatabase.trimSessions].
+  ///
+  /// Set on every manual test. A test the user walked and typed a number into
+  /// is the most expensive data in the app and cannot be reproduced; an
+  /// automatic window is free and the phone collects more on the next walk.
+  /// The old single cap of twenty deleted them interchangeably, so a fortnight
+  /// of background collection silently erased every test ever run.
+  BoolColumn get pinned => boolean().withDefault(const Constant(false))();
 
   /// What the detector counted at the time of recording, kept for display.
   IntColumn get detectedSteps => integer()();
@@ -90,7 +114,7 @@ class AppDatabase extends _$AppDatabase {
       : super(executor ?? driftDatabase(name: 'stepcounter'));
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -112,6 +136,23 @@ class AppDatabase extends _$AppDatabase {
             await m.addColumn(calibrationSessions, calibrationSessions.pressureSamples);
             await m.addColumn(calibrationSessions, calibrationSessions.declaredActivity);
             await m.addColumn(calibrationVersions, calibrationVersions.activityParamsJson);
+          }
+          if (from < 3) {
+            await m.addColumn(calibrationSessions, calibrationSessions.userSteps);
+            await m.addColumn(calibrationSessions, calibrationSessions.hardwareSteps);
+            await m.addColumn(calibrationSessions, calibrationSessions.pinned);
+
+            // actualSteps has always meant two different things depending on
+            // source. Without this backfill every historical test would show
+            // as unlabelled in the results list.
+            await m.database.customStatement(
+              "UPDATE calibration_sessions SET user_steps = actual_steps, "
+              "pinned = 1 WHERE source = 'manual'",
+            );
+            await m.database.customStatement(
+              "UPDATE calibration_sessions SET hardware_steps = actual_steps "
+              "WHERE source = 'automatic'",
+            );
           }
         },
       );
@@ -258,18 +299,37 @@ class AppDatabase extends _$AppDatabase {
   Future<void> deleteSession(int id) =>
       (delete(calibrationSessions)..where((t) => t.id.equals(id))).go();
 
-  /// Keeps the newest [keep] sessions so the corpus cannot grow without bound.
+  /// Bounds the corpus so recalibration, which replays every stored session,
+  /// cannot get slower forever.
   ///
-  /// Recalibration replays every stored session, so an uncapped corpus would
-  /// make calibration slower every time it ran.
-  Future<void> trimSessions({int keep = 20}) async {
-    final all = await (select(calibrationSessions)
-          ..orderBy([(t) => OrderingTerm.desc(t.recordedAt)]))
-        .get();
-    if (all.length <= keep) return;
-    for (final s in all.skip(keep)) {
-      await deleteSession(s.id);
+  /// Two caps rather than one, because the two kinds of session are not
+  /// interchangeable — see [CalibrationSessions.pinned]. Pinned sessions are
+  /// never trimmed at all; only the user can delete those, from the results
+  /// list.
+  Future<void> trimSessions({int keepAutomatic = 30, int keepManual = 60}) async {
+    for (final (source, keep) in [('automatic', keepAutomatic), ('manual', keepManual)]) {
+      final rows = await (select(calibrationSessions)
+            ..where((t) => t.source.equals(source) & t.pinned.equals(false))
+            ..orderBy([(t) => OrderingTerm.desc(t.recordedAt)]))
+          .get();
+      for (final s in rows.skip(keep)) {
+        await deleteSession(s.id);
+      }
     }
+  }
+
+  /// How many stored sessions came from each source.
+  ///
+  /// The number of automatically collected walks has to come from here and not
+  /// from the native staging directory: Dart drains that destructively as soon
+  /// as the UI attaches, so anything reading it for a corpus size sees zero
+  /// essentially always.
+  Future<({int manual, int automatic})> sessionCountsBySource() async {
+    final rows = await (select(calibrationSessions)).get();
+    return (
+      manual: rows.where((r) => r.source == 'manual').length,
+      automatic: rows.where((r) => r.source == 'automatic').length,
+    );
   }
 
   // ---- Calibration versions ---------------------------------------------
