@@ -48,6 +48,20 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release --build-number=${{ github.run_number }}
 
+      # Prints the signing certificate so key stability is a logged fact rather
+      # than something to take on trust.
+      #
+      # Android refuses an update signed by a different key, and the previous
+      # arrangement — signing with the auto-generated debug key on an ephemeral
+      # runner — produced a new key every build without ever saying so. Any two
+      # builds whose fingerprints match here will install over each other; any
+      # two that differ will not, and the log now says which.
+      - name: Show APK signer
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs \
+            build/app/outputs/flutter-apk/app-release.apk | grep -i 'SHA-256'
+
       # Runs after the Flutter build because that is what injects the Gradle
       # wrapper and local.properties into android/.
       #

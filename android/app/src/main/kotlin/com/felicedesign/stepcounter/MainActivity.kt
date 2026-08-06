@@ -153,6 +153,18 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    /** e.g. "1.0.0+7", or null if the package manager will not say. */
+    private fun appVersionLabel(): String? = runCatching {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+        info.versionName + "+" + code
+    }.getOrNull()
+
     private fun diagnostics(store: StepStore): Map<String, Any?> {
         val sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val live: Map<String, Any?> = StepSensorService.instance?.liveDebug() ?: emptyMap()
@@ -168,6 +180,12 @@ class MainActivity : FlutterActivity() {
             "autoWindowCount" to store.autoWindowCount(),
             "pendingSteps" to store.pendingTotal(),
             "ignoringBatteryOptimizations" to isIgnoringBatteryOptimizations(),
+            // Carried into the JSON export so a dump says which build produced
+            // it. Two dumps that disagree are only comparable if you know
+            // whether the detector changed between them.
+            "appVersion" to appVersionLabel(),
+            "androidSdk" to Build.VERSION.SDK_INT,
+            "deviceModel" to (Build.MANUFACTURER + " " + Build.MODEL),
         )
         return base + live
     }

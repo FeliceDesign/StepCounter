@@ -1,8 +1,14 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../app_scope.dart';
+import '../data/calibration_export.dart';
 import '../data/database.dart';
+import '../data/step_repository.dart';
 import '../detection/activity.dart';
 import '../detection/calibration_optimizer.dart';
 import 'calibration_screen.dart';
@@ -14,15 +20,38 @@ import 'calibration_screen.dart';
 /// feedback a test ever gave was a single screen shown once and then lost, so
 /// there was no way to tell a detector that had drifted from one bad walk, or
 /// to see whether calibration had helped.
-class CalibrationHistoryScreen extends StatelessWidget {
+class CalibrationHistoryScreen extends StatefulWidget {
   const CalibrationHistoryScreen({super.key});
+
+  @override
+  State<CalibrationHistoryScreen> createState() =>
+      _CalibrationHistoryScreenState();
+}
+
+class _CalibrationHistoryScreenState extends State<CalibrationHistoryScreen> {
+  bool _exporting = false;
 
   @override
   Widget build(BuildContext context) {
     final scope = AppScope.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Calibration')),
+      appBar: AppBar(
+        title: const Text('Calibration'),
+        actions: [
+          IconButton(
+            icon: _exporting
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.ios_share),
+            tooltip: 'Export data',
+            onPressed: _exporting ? null : _export,
+          ),
+        ],
+      ),
       body: StreamBuilder<List<CalibrationSession>>(
         stream: scope.repository.watchSessions(),
         builder: (context, snapshot) {
@@ -42,6 +71,7 @@ class CalibrationHistoryScreen extends StatelessWidget {
                 ),
               ),
               const _WhatGetsCollected(),
+              const _WhatExportContains(),
               const Divider(height: 32),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -66,6 +96,101 @@ class CalibrationHistoryScreen extends StatelessWidget {
         },
       ),
     );
+  }
+
+  /// Sizes of both export variants — (counts only, with recordings) — so the
+  /// dialog can say what each choice costs before it is made rather than after.
+  static Future<(int, int)> _estimateSizes(StepRepository repo) async => (
+        await repo.exportSizeEstimate(includeSamples: false),
+        await repo.exportSizeEstimate(includeSamples: true),
+      );
+
+  /// Writes a JSON dump and hands it to the system share sheet.
+  ///
+  /// Two sizes, because they are for different things. The counts alone are a
+  /// few kilobytes and can be pasted into a message; the full dump carries
+  /// every stored recording at 50 Hz, which is what makes the detector
+  /// re-runnable offline and what makes the file an attachment rather than
+  /// something you can read.
+  Future<void> _export() async {
+    final repo = AppScope.of(context).repository;
+    final messenger = ScaffoldMessenger.of(context);
+
+    final withSamples = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Export data'),
+        content: FutureBuilder<(int, int)>(
+          future: _estimateSizes(repo),
+          builder: (context, snapshot) {
+            final sizes = snapshot.data;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Everything the app has learned: every saved walk with its '
+                  'counts, the settings in use, and the history of every '
+                  'change to them.',
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Including the raw motion recordings makes the file much '
+                  'larger, but it is the only version anyone can re-run the '
+                  'detector against.'
+                  '${sizes == null ? '' : '\n\nCounts only: about '
+                      '${CalibrationExport.formatBytes(sizes.$1)}.'
+                      '\nWith recordings: about '
+                      '${CalibrationExport.formatBytes(sizes.$2)}.'}',
+                ),
+              ],
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Counts only'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('With recordings'),
+          ),
+        ],
+      ),
+    );
+    if (withSamples == null || !mounted) return;
+
+    setState(() => _exporting = true);
+    try {
+      final json = await repo.exportJson(includeSamples: withSamples);
+
+      // The cache directory, not documents: this is a file the user is
+      // sending somewhere, not one the app is keeping, and Android is free to
+      // reclaim it afterwards.
+      final dir = await getTemporaryDirectory();
+      final stamp = DateFormat('yyyyMMdd-HHmm').format(DateTime.now());
+      final file = File('${dir.path}/stepcounter-$stamp.json');
+      await file.writeAsString(json);
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'application/json')],
+          fileNameOverrides: ['stepcounter-$stamp.json'],
+          subject: 'Step counter data',
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Could not export: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
   }
 }
 
@@ -334,6 +459,36 @@ class _WhatGetsCollected extends StatelessWidget {
           'badly.\n\n'
           'Nothing leaves your phone. Turn the switch off to stop collecting, '
           'or clear everything under Settings → Reset.',
+        ),
+      ],
+    );
+  }
+}
+
+/// Says what leaves the phone when the export button is used, before it is
+/// used rather than after.
+class _WhatExportContains extends StatelessWidget {
+  const _WhatExportContains();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ExpansionTile(
+      leading: Icon(Icons.ios_share),
+      title: Text('What does exporting include?'),
+      childrenPadding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+      children: [
+        Text(
+          'A single JSON file holding every saved walk — what this app '
+          'counted, what you counted, what your phone’s own step sensor '
+          'counted — plus the settings currently in use and every change ever '
+          'made to them.\n\n'
+          'You can include the raw motion recordings or leave them out. They '
+          'are the accelerometer and gyroscope readings themselves, fifty '
+          'times a second, and they are what lets someone re-run the step '
+          'detector on your actual walks instead of guessing from the totals. '
+          'They also make the file far bigger.\n\n'
+          'There is no location data in it, and nothing is uploaded anywhere '
+          'by the app — exporting hands the file to whichever app you pick.',
         ),
       ],
     );

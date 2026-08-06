@@ -28,6 +28,10 @@ dependencies:
   shared_preferences: ^2.5.3
 
   intl: ^0.20.2
+  # Hands the exported JSON to the system share sheet. The alternative was a
+  # hand-rolled FileProvider plus an ACTION_SEND intent, which is the same
+  # thing with more of it to get wrong.
+  share_plus: ^13.3.0
 
 dev_dependencies:
   flutter_test:

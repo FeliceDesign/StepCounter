@@ -10,6 +10,7 @@ import '../detection/calibration_params.dart';
 import '../detection/sensor_sample.dart';
 import '../detection/motion_pipeline.dart';
 import '../services/native_bridge.dart';
+import 'calibration_export.dart';
 import 'database.dart';
 
 /// Coordinates the three halves of the app: the native counting service, the
@@ -201,6 +202,42 @@ class StepRepository extends ChangeNotifier {
   }
 
   Future<List<CalibrationVersion>> versionHistory() => db.versionHistory();
+
+  /// Everything the app has learned, as a JSON string.
+  ///
+  /// Assembled here rather than in the UI because it needs the database, the
+  /// active parameters and the device's sensor capabilities, and the
+  /// repository is the only thing holding all three.
+  Future<String> exportJson({bool includeSamples = true}) async {
+    final sessions = await db.allSessions();
+    final versions = await db.versionHistory(limit: 100);
+    final diagnostics = await bridge.diagnostics();
+
+    return CalibrationExport.encode(CalibrationExport.build(
+      sessions: sessions,
+      versions: versions,
+      activeParams: _params,
+      activeActivityParams: _activityParams,
+      appVersion: diagnostics.appVersion,
+      device: {
+        'model': diagnostics.deviceModel,
+        'androidSdk': diagnostics.androidSdk,
+        'hasAccelerometer': diagnostics.hasAccelerometer,
+        'hasGyroscope': diagnostics.hasGyroscope,
+        'hasHardwareCounter': diagnostics.hasHardwareCounter,
+        'hasBarometer': diagnostics.hasBarometer,
+        'autoCalibrationEnabled': diagnostics.autoCalibrationEnabled,
+      },
+      includeSamples: includeSamples,
+    ));
+  }
+
+  /// Sessions and their blob sizes, for sizing an export before running one.
+  Future<int> exportSizeEstimate({required bool includeSamples}) async =>
+      CalibrationExport.estimatedBytes(
+        sessions: await db.allSessions(),
+        includeSamples: includeSamples,
+      );
 
   // ---- Sessions ----------------------------------------------------------
 

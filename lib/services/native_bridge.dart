@@ -81,6 +81,13 @@ class Diagnostics {
   /// recent movement lying along gravity. The two gates that reject hand
   /// movement; null vertical share means the gravity estimate is not currently
   /// trustworthy and that gate is standing aside.
+  /// Build and hardware identity, carried into the JSON export so a dump says
+  /// which version produced it — two dumps are only comparable if you know
+  /// whether the detector changed between them.
+  String? get appVersion => raw['appVersion'] as String?;
+  String? get deviceModel => raw['deviceModel'] as String?;
+  int? get androidSdk => (raw['androidSdk'] as num?)?.toInt();
+
   double get intervalCv => (raw['intervalCv'] as num?)?.toDouble() ?? 0;
   double? get verticalShare => (raw['verticalShare'] as num?)?.toDouble();
 
