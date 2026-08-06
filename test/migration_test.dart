@@ -165,4 +165,104 @@ void main() {
       10,
     );
   });
+
+  /// A v2 database: the v1 schema plus the three columns v2 added, holding one
+  /// manual session and one automatic window.
+  ///
+  /// Needed separately from [createV1] because the v2 -> v3 step backfills
+  /// `actual_steps` into two new columns depending on `source`, and a v1
+  /// fixture would exercise both migrations at once and hide which one did it.
+  void createV2() {
+    final db = sqlite3.open(file.path);
+    db.execute('''
+      CREATE TABLE step_minutes (
+        minute_epoch INTEGER NOT NULL,
+        activity TEXT NOT NULL DEFAULT 'unknown',
+        steps INTEGER NOT NULL,
+        PRIMARY KEY (minute_epoch, activity)
+      );
+    ''');
+    db.execute('''
+      CREATE TABLE calibration_sessions (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        recorded_at INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        actual_steps INTEGER NOT NULL,
+        detected_steps INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        samples BLOB NOT NULL,
+        pressure_samples BLOB,
+        declared_activity TEXT
+      );
+    ''');
+    db.execute('''
+      CREATE TABLE calibration_versions (
+        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        params_json TEXT NOT NULL,
+        activity_params_json TEXT,
+        source TEXT NOT NULL,
+        holdout_error REAL,
+        baseline_error REAL,
+        session_count INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 0
+      );
+    ''');
+    db.execute(
+      "INSERT INTO calibration_sessions "
+      "(recorded_at, duration_ms, actual_steps, detected_steps, source, samples) "
+      "VALUES (1000, 20000, 120, 118, 'manual', ?)",
+      [
+        [1, 2, 3, 4]
+      ],
+    );
+    db.execute(
+      "INSERT INTO calibration_sessions "
+      "(recorded_at, duration_ms, actual_steps, detected_steps, source, samples) "
+      "VALUES (2000, 30000, 46, 44, 'automatic', ?)",
+      [
+        [5, 6, 7, 8]
+      ],
+    );
+    db.execute('PRAGMA user_version = 2;');
+    db.dispose();
+  }
+
+  test('v2 to v3 sends each ground truth to the column that means it', () async {
+    createV2();
+    final db = AppDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+
+    final sessions = await db.allSessions();
+    final manual = sessions.firstWhere((s) => s.source == 'manual');
+    final auto = sessions.firstWhere((s) => s.source == 'automatic');
+
+    // actual_steps meant the user's count on one row and the pedometer's on
+    // the other. Without the backfill every historical test would show as
+    // unlabelled in the results list.
+    expect(manual.userSteps, 120);
+    expect(manual.hardwareSteps, isNull);
+    expect(auto.hardwareSteps, 46);
+    expect(auto.userSteps, isNull);
+
+    // The optimiser's label is untouched by the split.
+    expect(manual.actualSteps, 120);
+    expect(auto.actualSteps, 46);
+
+    // A walk the user made and counted is protected from trimming; a free
+    // background window is not.
+    expect(manual.pinned, isTrue);
+    expect(auto.pinned, isFalse);
+  });
+
+  test('v1 upgrades all the way to v3 in one hop', () async {
+    createV1(rows: const []);
+    final db = AppDatabase(NativeDatabase(file));
+    addTearDown(db.close);
+
+    final sessions = await db.allSessions();
+    expect(sessions.single.userSteps, 50);
+    expect(sessions.single.pinned, isTrue);
+  });
+
 }
