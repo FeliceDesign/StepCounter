@@ -59,7 +59,17 @@ jobs:
       # this every APK claimed version 1 and Android had no reason to treat a
       # newer build as an upgrade. The run number is monotonic per repository.
       - name: Build release APK
-        run: flutter build apk --release --build-number=${{ github.run_number }}
+        #
+        # The offset exists because this repository is a continuation of
+        # another one, whose builds reached versionCode 7 and are installed on
+        # real phones. Run numbers restart at 1 in a new repository, and
+        # Android refuses to install a lower versionCode over a higher one — so
+        # without this, the first builds here would be rejected as downgrades
+        # by exactly the devices they are meant to update, despite carrying the
+        # same signing key. Raise it again if a future move repeats this.
+        run: |
+          flutter build apk --release \
+            --build-number=$(( ${{ github.run_number }} + 100 ))
 
       # Prints the signing certificate so key stability is a logged fact rather
       # than something to take on trust.
